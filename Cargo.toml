@@ -1,0 +1,3 @@
+[workspace]
+members = ["modal-proto", "modal"]
+resolver = "2"
