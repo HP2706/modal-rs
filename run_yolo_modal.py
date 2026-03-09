@@ -29,9 +29,14 @@ base_image = (
         "npm install -g @anthropic-ai/claude-code",
     )
     .uv_pip_install("modal")
+    .add_local_file(
+        local_path='sandbox_config.json',
+        remote_path='/root/sandbox_config.json',
+    )
 )
 
 repo_vol = modal.Volume.from_name("modal-rs-repo", create_if_missing=True)
+
 
 SSH_PORT = 8022
 
@@ -69,17 +74,20 @@ def _load_image() -> modal.Image:
     return base_image
 
 
-configured_image = _load_image()
 
-
-def _create_sandbox() -> modal.Sandbox:
+def _create_sandbox(image_id: str | None = None) -> modal.Sandbox:
     """Create a sandbox with the configured image, volume, and secrets."""
+    if image_id is None:
+        image = _load_image()
+    else:
+        image = modal.Image.from_id(image_id)
+        
     return modal.Sandbox.create(
         app=app,
-        image=configured_image.env({"IS_SANDBOX": "1"}),
+        image=image.env({"IS_SANDBOX": "1"}),
         secrets=[github_secret],
         volumes={REPO_DIR: repo_vol},
-        timeout=7200,
+        timeout=60*60*24,
     )
 
 
@@ -130,14 +138,19 @@ def _run_claude(sb: modal.Sandbox, prompt: str, logfile: str, max_turns: int | N
 
     print(f'cmd: {cmd}', flush=True)
 
+    # Start a log writer process in the sandbox — we'll pipe JSONL lines
+    # to it in real-time. Uses >> append per line so each write is flushed
+    # to disk immediately (important for volume commits to capture data).
+    log_writer = sb.exec(
+        "bash", "-c",
+        f"while IFS= read -r line; do printf '%s\\n' \"$line\" >> {logfile}; done",
+    )
+
     # PTY output contains ANSI escape codes mixed with JSON lines.
-    # Collect raw output, strip escape codes, and print clean JSON lines.
+    # Strip escape codes, extract JSON lines, print + write each immediately.
     ansi_re = re.compile(r'\x1b[\[\]()][0-9;?]*[a-zA-Z\x07]|\r')
-    raw_chunks: list[str] = []
     line_buf = ""
     for chunk in proc.stdout:
-        raw_chunks.append(chunk)
-        # Strip ANSI escapes and extract JSON lines
         clean = ansi_re.sub('', chunk)
         line_buf += clean
         while '\n' in line_buf:
@@ -145,28 +158,22 @@ def _run_claude(sb: modal.Sandbox, prompt: str, logfile: str, max_turns: int | N
             line = line.strip()
             if line.startswith('{'):
                 print(line, flush=True)
+                log_writer.stdin.write(line + '\n')
+                log_writer.stdin.drain()
     # Flush remaining buffer
     remaining = line_buf.strip()
     if remaining.startswith('{'):
         print(remaining, flush=True)
+        log_writer.stdin.write(remaining + '\n')
+        log_writer.stdin.drain()
     proc.wait()
 
-    # Write the logfile into the sandbox volume via stdin
-    # Use the clean JSON lines (not raw PTY output with escape codes)
-    full_output = ansi_re.sub('', "".join(raw_chunks))
-    json_lines = [l.strip() for l in full_output.split('\n') if l.strip().startswith('{')]
-    log_content = '\n'.join(json_lines) + '\n'
-
-    write_proc = sb.exec("bash", "-c", f"cat > {logfile}")
-    write_proc.stdin.write(log_content)
-    write_proc.stdin.write_eof()
-    write_proc.stdin.drain()
-    write_proc.wait()
+    # Close the log writer
+    log_writer.stdin.write_eof()
+    log_writer.stdin.drain()
+    log_writer.wait()
 
     return proc.returncode
-
-
-# --- Setup: interactive sandbox for claude auth ---
 
 @app.local_entrypoint()
 def setup_auth():
@@ -227,9 +234,9 @@ def setup_auth():
 
 # --- Main entrypoints (all sandbox-based) ---
 
-def setup_repo():
+def setup_repo(image_id: str | None = None):
     """Clone/update the repo in the volume."""
-    sb = _create_sandbox()
+    sb = _create_sandbox(image_id)
     _setup_git(sb)
 
     result = sb.exec("test", "-d", f"{REPO_DIR}/.git")
@@ -251,11 +258,11 @@ def setup_repo():
     sb.terminate()
 
 
-def run_yolo():
+def run_yolo(image_id: str | None = None):
     """Pull latest then run the YOLO dev loop."""
     from datetime import datetime
 
-    sb = _create_sandbox()
+    sb = _create_sandbox(image_id)
     _setup_git(sb)
 
     result = sb.exec("test", "-d", f"{REPO_DIR}/.git")
@@ -285,7 +292,7 @@ def run_yolo():
 
     loop_n = 20
     for i in range(1, loop_n + 1):
-        logfile = f"{run_dir}/agent_{commit}_{i}.log"
+        logfile = f"{run_dir}/agent_{commit}_{i}.jsonl"
         print(f"\n{'='*60}", flush=True)
         print(f"[Loop {i}/{loop_n}] Starting claude agent...", flush=True)
         print(f"{'='*60}", flush=True)
@@ -302,9 +309,9 @@ def run_yolo():
     print("Done.", flush=True)
 
 
-def test_logging():
+def test_logging(image_id: str | None = None):
     """Test that claude output is forwarded to stdout and written to logfile."""
-    sb = _create_sandbox()
+    sb = _create_sandbox(image_id)
     _setup_git(sb)
 
     result = sb.exec("test", "-d", f"{REPO_DIR}/.git")
@@ -315,7 +322,7 @@ def test_logging():
         return
 
     sb.exec("mkdir", "-p", f"{REPO_DIR}/agent_logs").wait()
-    logfile = f"{REPO_DIR}/agent_logs/test_logging.log"
+    logfile = f"{REPO_DIR}/agent_logs/test_logging.jsonl"
 
     print(f"Logfile: {logfile}", flush=True)
     print("Starting claude...", flush=True)
@@ -336,21 +343,35 @@ def test_logging():
     print(f"Logfile: {log_proc.stdout.read().strip()}", flush=True)
 
     sb.terminate()
-
-
+    
+    
+def main(
+    cmd : str,
+    detach : bool = False,
+):
+    print("detaching:", detach)
+    if cmd == "setup_repo":
+        fn = setup_repo
+    elif cmd == "run_yolo":
+        fn = run_yolo
+    elif cmd == "test_logging":
+        fn = test_logging
+    else:
+        raise ValueError(f"Unknown command: {cmd}")
+    
+    modal_fn = app.function(
+        volumes={REPO_DIR: repo_vol}, 
+        timeout=60*60*24, 
+        image=base_image,
+        secrets=[github_secret],
+    )(fn)
+    
+    with open(CONFIG_FILE, 'r') as f:
+        image_id = json.load(f)['image_id']
+    with modal.enable_output(), app.run(detach=detach):
+        result = modal_fn.remote(image_id=image_id)
+        print("result:", result)
+    
 if __name__ == "__main__":
-    import sys
-
-    with modal.enable_output(), app.run():
-        cmd = sys.argv[1] if len(sys.argv) > 1 else "test_logging"
-        if cmd == "setup_repo":
-            setup_repo()
-        elif cmd == "run_yolo":
-            run_yolo()
-        elif cmd == "test_logging":
-            test_logging()
-        elif cmd == "test_streaming":
-            test_streaming()
-        else:
-            print(f"Unknown command: {cmd}")
-            print("Usage: python run_yolo_modal.py [setup_repo|run_yolo|test_logging|test_streaming]")
+    import fire
+    fire.Fire(main)
