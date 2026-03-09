@@ -237,8 +237,8 @@
       "category": "example",
       "go_reference": "libmodal/modal-go/examples/",
       "priority": "low",
-      "status": "todo",
-      "notes": "26 Go examples need Rust equivalents. No examples directory exists yet."
+      "status": "done",
+      "notes": "26 Rust examples in modal/examples/ mirroring all Go examples. All compile successfully. Complete."
     }
   ]
 }

@@ -1,5 +1,45 @@
 # Modal Rust SDK Progress
 
+## 2026-03-09 — Rust examples implementation
+
+### What was done
+Implemented 26 Rust examples in `modal/examples/` mirroring all Go examples (F024):
+- **cls_call.rs**: Calling a Modal Cls with positional/keyword arguments
+- **cls_call_with_options.rs**: Cls with custom Secrets and concurrency options
+- **custom_client.rs**: Client with custom credentials from environment variables
+- **function_call.rs**: Calling a Function with args and kwargs
+- **function_current_stats.rs**: Retrieving Function statistics (backlog, runners)
+- **function_spawn.rs**: Spawning async Function execution
+- **image_building.rs**: Layer-by-layer image building with Secrets
+- **sandbox.rs**: Basic Sandbox with stdin/stdout communication
+- **sandbox_agent.rs**: AI agent in Sandbox with PTY and Dockerfile layers
+- **sandbox_cloud_bucket.rs**: S3 bucket mount with CloudBucketMount
+- **sandbox_connect_token.rs**: Connect Tokens for HTTP access
+- **sandbox_directory_snapshot.rs**: Directory snapshot and mount between Sandboxes
+- **sandbox_exec.rs**: Multi-command exec with Secrets
+- **sandbox_filesystem.rs**: FileMode, SeekWhence, filesystem operations
+- **sandbox_filesystem_snapshot.rs**: Full filesystem snapshot
+- **sandbox_gpu.rs**: GPU configuration and CUDA image
+- **sandbox_named.rs**: Named Sandbox lookup
+- **sandbox_poll.rs**: Poll/Wait lifecycle
+- **sandbox_prewarm.rs**: Image pre-building with Build()
+- **sandbox_private_image.rs**: Private ECR/GCP registry images
+- **sandbox_proxy.rs**: Proxy-enabled Sandbox
+- **sandbox_secrets.rs**: Persistent and ephemeral Secrets
+- **sandbox_tunnels.rs**: Tunnel URL/TLS/TCP socket access
+- **sandbox_volume.rs**: Persistent Volume with read-only mode
+- **sandbox_volume_ephemeral.rs**: Ephemeral Volume lifecycle
+- **telemetry.rs**: Custom gRPC interceptor patterns
+
+### Test counts
+- 356 unit tests + 136 integration tests — all passing
+- 26 examples — all compile successfully
+
+### What's next
+All features (F001-F024) are complete. The Modal Rust SDK implementation is finished.
+
+---
+
 ## 2026-03-09 — Integration tests implementation
 
 ### What was done
