@@ -249,6 +249,16 @@
       "priority": "medium",
       "status": "done",
       "notes": "38 new integration tests across 6 files: app_test, config_test, logger_test, cloud_bucket_mount_test, serialization_test, task_command_router_test. Also fixed queue_test mock. Complete."
+    },
+    {
+      "id": "F027",
+      "name": "Crate-level documentation and cleanup",
+      "module": "lib",
+      "category": "source",
+      "go_reference": "libmodal/modal-go/doc.go",
+      "priority": "low",
+      "status": "done",
+      "notes": "Added crate-level //! documentation to lib.rs matching doc.go content. Fixed unused import warnings in function.rs and invocation.rs. Fixed unreachable code warning in function.rs create_input. Complete."
     }
   ]
 }

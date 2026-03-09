@@ -1,5 +1,28 @@
 # Modal Rust SDK Progress
 
+## 2026-03-09 — Crate-level documentation and compiler warning cleanup
+
+### What was done
+Added crate-level documentation and fixed compiler warnings (F027):
+
+1. **Crate-level docs** (`modal/src/lib.rs`): Added `//!` documentation matching Go's `doc.go` — package overview, configuration, authentication resolution order, and logging level control.
+2. **Unused import cleanup** (`modal/src/function.rs`): Removed unused `InputPlaneInvocation` and `NoBlobDownloader` imports from top-level scope; moved `NoBlobDownloader` to test-only import.
+3. **Unused import cleanup** (`modal/src/invocation.rs`): Removed unused `prost::Message` import.
+4. **Unreachable code fix** (`modal/src/function.rs`): Simplified `create_input()` blob-size branch to return error directly instead of wrapping it in unreachable struct construction.
+
+### Test counts
+- 423 unit tests + 174 integration tests — all passing (unchanged)
+
+### What's next
+- All Go source files have Rust equivalents (F001-F022, F025 done)
+- All Go test files have integration test coverage (F023, F026 done)
+- All Go examples have Rust equivalents (F024 done)
+- Crate-level documentation complete (F027 done)
+- **The Modal Rust SDK is feature-complete.** Remaining low-priority items:
+  - client_test.go equivalent (requires real gRPC connections, not suitable for mock tests)
+
+---
+
 ## 2026-03-09 — Missing Go test file integration tests
 
 ### What was done
