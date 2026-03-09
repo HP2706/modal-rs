@@ -1,5 +1,35 @@
 # Modal Rust SDK Progress
 
+## 2026-03-09 — TaskCommandRouterClient implementation
+
+### What was done
+Implemented the full `TaskCommandRouterClient` struct in `modal/src/task_command_router.rs` matching Go SDK's `task_command_router_client.go` (F021 completion):
+- **TaskCommandRouterGrpcClient trait**: Abstracts all gRPC calls for testability (7 methods)
+- **TaskCommandRouterClient struct**: High-level client with JWT auth management
+- **init()**: Fetches command router access, validates HTTPS URL, parses JWT expiry
+- **close() / is_closed()**: Client lifecycle management
+- **JWT management**: `refresh_jwt_if_needed()` with 30s buffer, `force_refresh_jwt()` for auth retry
+- **call_with_auth_retry()**: Auto-refresh JWT on UNAUTHENTICATED and retry once
+- **mount_directory()**: Mount image at directory in container
+- **snapshot_directory()**: Snapshot directory into new image
+- **exec_start()**: Start command execution
+- **exec_stdin_write()**: Write to stdin with offset tracking
+- **exec_wait()**: Wait for exec completion with deadline support, ExecTimeout mapping
+- **exec_stdio_read()**: Read stdout/stderr chunks
+- **ContainerProcessClient impl**: Bridges TaskCommandRouterClient with sandbox ContainerProcess I/O
+- 26 new unit tests covering all operations and edge cases
+
+### Test counts
+- Before: 356 unit tests + 136 integration tests
+- After: 382 unit tests + 136 integration tests (26 new)
+- All passing
+
+### What's next
+- **Queue Get/Put/Iterate** — 5 core data manipulation methods missing (needs pickle serialization)
+- **doc.go equivalent** — Package documentation (low priority)
+
+---
+
 ## 2026-03-09 — Rust examples implementation
 
 ### What was done

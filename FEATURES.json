@@ -208,7 +208,7 @@
       "go_reference": "libmodal/modal-go/task_command_router_client.go",
       "priority": "high",
       "status": "done",
-      "notes": "gRPC routing client. Complete."
+      "notes": "Full TaskCommandRouterClient struct with JWT auth management, auth retry, all methods (MountDirectory, SnapshotDirectory, ExecStart, ExecStdinWrite, ExecWait, ExecStdioRead), ContainerProcessClient trait impl. 26 tests. Complete."
     },
     {
       "id": "F022",
