@@ -9,5 +9,5 @@ for ((i=1; i<=loop_n; i++)); do
 
     claude --dangerously-skip-permissions \
            -p "$(cat AGENT_PROMPT.md)" \
-           --model claude-opus-4-6 &> "$LOGFILE"
+           --model claude-opus-4-6 2>&1 | tee "$LOGFILE"
 done
