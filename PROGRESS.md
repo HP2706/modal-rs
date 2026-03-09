@@ -1,5 +1,34 @@
 # Modal Rust SDK Progress
 
+## 2026-03-09 — Invocation module implementation
+
+### What was done
+Implemented the Invocation module (`modal/src/invocation.rs`) with:
+- **InvocationGrpcClient** trait abstracting all gRPC calls (FunctionMap, FunctionGetOutputs, FunctionRetryInputs, AttemptStart, AttemptAwait, AttemptRetry, BlobGet)
+- **BlobDownloader** trait for HTTP blob downloads (testable without network)
+- **ControlPlaneInvocation**: create via FunctionMap, poll via FunctionGetOutputs, retry via FunctionRetryInputs
+- **InputPlaneInvocation**: create via AttemptStart, poll via AttemptAwait, retry via AttemptRetry
+- **poll_function_output**: polling loop with 55s default timeout, configurable user timeout
+- **process_result**: handles GenericResult status (Success, Timeout, InternalFailure, Failure, Terminated)
+- **deserialize_data_format**: CBOR (via ciborium), Pickle (unsupported), ASGI (unsupported), GeneratorDone
+- **cbor_serialize/cbor_deserialize**: helpers for function input/output encoding
+- **blob_download**: two-step blob retrieval (gRPC for URL, then HTTP download)
+- Added `ciborium` dependency for CBOR support
+- 48 unit tests covering all operations and edge cases
+
+### Test counts
+- Before: 181 unit tests
+- After: 229 unit tests (48 new)
+- All passing
+
+### What's next (priority order)
+1. **Function** (`function.rs`, 10 lines) — Primary user API. Needs FromName, Remote(), Spawn(), GetCurrentStats(), UpdateAutoscaler(), createInput, serialization, invocation routing.
+2. **Image.Build()** — Streaming gRPC build orchestration (structural types done, build method not yet implemented).
+3. **Queue Put/Get/Iterate** — Need pickle serialization infrastructure.
+4. **Integration tests** — All 17 test files in `modal/tests/` are empty.
+
+---
+
 ## 2026-03-09 — SandboxFilesystem module implementation
 
 ### What was done
