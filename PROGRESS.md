@@ -1,5 +1,29 @@
 # Modal Rust SDK Progress
 
+## 2026-03-09 — ContainerProcess and I/O streaming implementation
+
+### What was done
+Completed the Sandbox module (F017) by implementing ContainerProcess with full I/O streaming support in `modal/src/sandbox.rs`:
+- **ContainerProcessClient trait**: Abstracts task command router calls (exec_stdin_write, exec_stdio_read, exec_wait)
+- **ContainerProcess struct**: Wraps a running exec with stdin/stdout/stderr streams and wait()
+- **ContainerProcessStdin**: Implements `std::io::Write` with offset-based ordered delivery and close/EOF support
+- **ContainerProcessReader**: Implements `std::io::Read` with internal buffering, lazy fetch from server, and Ignore (immediate EOF) support
+- **ContainerProcessExitStatus**: Code(i32) and Signal(i32) variants with POSIX exit_code() conversion (signal → 128+signal)
+- **FileDescriptor enum**: Stdout/Stderr selector for output streams
+- **Helper methods**: read_to_string_all(), read_to_end_all(), close_stdin(), is_closed()
+- 24 new unit tests covering: exit status, stdin writes with offset tracking, stdin close/idempotent/after-close, stdout/stderr read, multi-chunk reads, buffering, ignored streams, binary data, full lifecycle, error propagation
+
+### Test counts
+- Before: 332 unit tests
+- After: 356 unit tests (24 new)
+- All passing
+
+### What's next (priority order)
+1. **Integration tests** — All 17 test files in `modal/tests/` are empty (F023)
+2. **Examples** — 26 Go examples need Rust equivalents (F024)
+
+---
+
 ## 2026-03-09 — Ephemeral module implementation
 
 ### What was done

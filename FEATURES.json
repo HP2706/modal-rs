@@ -167,8 +167,8 @@
       "category": "source",
       "go_reference": "libmodal/modal-go/sandbox.go",
       "priority": "high",
-      "status": "in_progress",
-      "notes": "All service methods done (Create, FromID, FromName, List, Poll). Instance methods done (SetTags, GetTags, Tunnels, SnapshotFilesystem, SnapshotDirectory, MountImage, CreateConnectToken). Still missing: ContainerProcess type, I/O streaming (Stdin/Stdout/Stderr)."
+      "status": "done",
+      "notes": "All service methods done. ContainerProcess type with stdin (Write), stdout/stderr (Read), lazy stream readers, offset-based stdin, wait(). Complete."
     },
     {
       "id": "F018",

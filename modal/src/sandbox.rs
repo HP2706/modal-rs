@@ -1,4 +1,6 @@
 use std::collections::HashMap;
+use std::io;
+use std::sync::Arc;
 use std::time::Duration;
 
 use crate::error::ModalError;
@@ -831,6 +833,315 @@ pub fn validate_exec_args(args: &[String]) -> Result<(), ModalError> {
         )));
     }
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// ContainerProcess — I/O streaming for exec'd processes in a sandbox
+// ---------------------------------------------------------------------------
+
+/// File descriptor selector for container process output streams.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileDescriptor {
+    Stdout,
+    Stderr,
+}
+
+/// Exit status returned by ContainerProcess::wait().
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ContainerProcessExitStatus {
+    /// Process exited with the given code.
+    Code(i32),
+    /// Process was killed by the given signal number.
+    Signal(i32),
+}
+
+impl ContainerProcessExitStatus {
+    /// Returns the exit code. For signals, returns 128 + signal (POSIX convention).
+    pub fn exit_code(&self) -> i32 {
+        match self {
+            Self::Code(c) => *c,
+            Self::Signal(s) => 128 + s,
+        }
+    }
+}
+
+/// Trait abstracting the task command router calls needed for ContainerProcess I/O.
+pub trait ContainerProcessClient: Send + Sync {
+    /// Write data to the process stdin. If `eof` is true, the stdin stream is closed.
+    fn exec_stdin_write(
+        &self,
+        task_id: &str,
+        exec_id: &str,
+        offset: u64,
+        data: &[u8],
+        eof: bool,
+    ) -> Result<(), crate::error::ModalError>;
+
+    /// Read the next chunk from stdout or stderr.
+    /// Returns `Ok(Some(data))` for data, `Ok(None)` for end-of-stream.
+    fn exec_stdio_read(
+        &self,
+        task_id: &str,
+        exec_id: &str,
+        fd: FileDescriptor,
+    ) -> Result<Option<Vec<u8>>, crate::error::ModalError>;
+
+    /// Wait for the process to exit.
+    fn exec_wait(
+        &self,
+        task_id: &str,
+        exec_id: &str,
+        deadline: Option<Duration>,
+    ) -> Result<ContainerProcessExitStatus, crate::error::ModalError>;
+}
+
+/// A running process inside a Modal Sandbox, providing stdin/stdout/stderr streams.
+///
+/// Created after calling `SandboxService::exec()` to start a command.
+///
+/// # Example (conceptual)
+/// ```ignore
+/// let exec_id = sandbox_service.exec(&sandbox, cmd, params)?;
+/// let process = ContainerProcess::new(client, task_id, exec_id, params, None);
+/// write!(process.stdin(), b"hello")?;
+/// process.close_stdin()?;
+/// let mut output = String::new();
+/// process.stdout().read_to_string(&mut output)?;
+/// let status = process.wait()?;
+/// ```
+pub struct ContainerProcess<C: ContainerProcessClient> {
+    client: Arc<C>,
+    task_id: String,
+    exec_id: String,
+    deadline: Option<Duration>,
+    stdin: ContainerProcessStdin<C>,
+    stdout: ContainerProcessReader<C>,
+    stderr: ContainerProcessReader<C>,
+}
+
+impl<C: ContainerProcessClient> ContainerProcess<C> {
+    /// Create a new ContainerProcess wrapping an already-started exec.
+    pub fn new(
+        client: Arc<C>,
+        task_id: String,
+        exec_id: String,
+        params: &SandboxExecParams,
+        deadline: Option<Duration>,
+    ) -> Self {
+        let stdin = ContainerProcessStdin {
+            client: client.clone(),
+            task_id: task_id.clone(),
+            exec_id: exec_id.clone(),
+            offset: 0,
+            closed: false,
+        };
+
+        let stdout = ContainerProcessReader::new(
+            client.clone(),
+            task_id.clone(),
+            exec_id.clone(),
+            FileDescriptor::Stdout,
+            params.stdout == StreamConfig::Ignore,
+        );
+
+        let stderr = ContainerProcessReader::new(
+            client.clone(),
+            task_id.clone(),
+            exec_id.clone(),
+            FileDescriptor::Stderr,
+            params.stderr == StreamConfig::Ignore,
+        );
+
+        Self {
+            client,
+            task_id,
+            exec_id,
+            deadline,
+            stdin,
+            stdout,
+            stderr,
+        }
+    }
+
+    /// Get a mutable reference to stdin for writing.
+    pub fn stdin(&mut self) -> &mut ContainerProcessStdin<C> {
+        &mut self.stdin
+    }
+
+    /// Get a mutable reference to stdout for reading.
+    pub fn stdout(&mut self) -> &mut ContainerProcessReader<C> {
+        &mut self.stdout
+    }
+
+    /// Get a mutable reference to stderr for reading.
+    pub fn stderr(&mut self) -> &mut ContainerProcessReader<C> {
+        &mut self.stderr
+    }
+
+    /// Close stdin (sends EOF to the process).
+    pub fn close_stdin(&mut self) -> Result<(), crate::error::ModalError> {
+        self.stdin.close()
+    }
+
+    /// Wait for the process to exit. Returns the exit code.
+    pub fn wait(&self) -> Result<i32, crate::error::ModalError> {
+        let status = self
+            .client
+            .exec_wait(&self.task_id, &self.exec_id, self.deadline)?;
+        Ok(status.exit_code())
+    }
+
+    /// Get the exec ID.
+    pub fn exec_id(&self) -> &str {
+        &self.exec_id
+    }
+
+    /// Get the task ID.
+    pub fn task_id(&self) -> &str {
+        &self.task_id
+    }
+}
+
+/// Stdin writer for a container process. Tracks byte offset for ordered delivery.
+pub struct ContainerProcessStdin<C: ContainerProcessClient> {
+    client: Arc<C>,
+    task_id: String,
+    exec_id: String,
+    offset: u64,
+    closed: bool,
+}
+
+impl<C: ContainerProcessClient> ContainerProcessStdin<C> {
+    /// Close stdin by sending an EOF marker.
+    pub fn close(&mut self) -> Result<(), crate::error::ModalError> {
+        if self.closed {
+            return Ok(());
+        }
+        self.client
+            .exec_stdin_write(&self.task_id, &self.exec_id, self.offset, &[], true)?;
+        self.closed = true;
+        Ok(())
+    }
+
+    /// Returns true if stdin has been closed.
+    pub fn is_closed(&self) -> bool {
+        self.closed
+    }
+}
+
+impl<C: ContainerProcessClient> io::Write for ContainerProcessStdin<C> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        if self.closed {
+            return Err(io::Error::new(io::ErrorKind::BrokenPipe, "stdin closed"));
+        }
+        if buf.is_empty() {
+            return Ok(0);
+        }
+        self.client
+            .exec_stdin_write(&self.task_id, &self.exec_id, self.offset, buf, false)
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+        self.offset += buf.len() as u64;
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Buffered reader for container process stdout or stderr.
+///
+/// Reads are lazily fetched from the command router — no background task is
+/// spawned until the first call to `read()`. When the stream config is
+/// `Ignore`, reads immediately return EOF.
+pub struct ContainerProcessReader<C: ContainerProcessClient> {
+    client: Arc<C>,
+    task_id: String,
+    exec_id: String,
+    fd: FileDescriptor,
+    buffer: Vec<u8>,
+    buf_pos: usize,
+    eof: bool,
+}
+
+impl<C: ContainerProcessClient> ContainerProcessReader<C> {
+    fn new(
+        client: Arc<C>,
+        task_id: String,
+        exec_id: String,
+        fd: FileDescriptor,
+        ignored: bool,
+    ) -> Self {
+        Self {
+            client,
+            task_id,
+            exec_id,
+            fd,
+            buffer: Vec::new(),
+            buf_pos: 0,
+            eof: ignored, // if ignored, immediately at EOF
+        }
+    }
+
+    /// Read all remaining output into a String.
+    pub fn read_to_string_all(&mut self) -> io::Result<String> {
+        let mut s = String::new();
+        io::Read::read_to_string(self, &mut s)?;
+        Ok(s)
+    }
+
+    /// Read all remaining output into a Vec<u8>.
+    pub fn read_to_end_all(&mut self) -> io::Result<Vec<u8>> {
+        let mut v = Vec::new();
+        io::Read::read_to_end(self, &mut v)?;
+        Ok(v)
+    }
+}
+
+impl<C: ContainerProcessClient> io::Read for ContainerProcessReader<C> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        // Drain buffered data first
+        if self.buf_pos < self.buffer.len() {
+            let remaining = self.buffer.len() - self.buf_pos;
+            let n = std::cmp::min(buf.len(), remaining);
+            buf[..n].copy_from_slice(&self.buffer[self.buf_pos..self.buf_pos + n]);
+            self.buf_pos += n;
+            if self.buf_pos == self.buffer.len() {
+                self.buffer.clear();
+                self.buf_pos = 0;
+            }
+            return Ok(n);
+        }
+
+        if self.eof {
+            return Ok(0);
+        }
+
+        // Fetch the next chunk from the server
+        match self
+            .client
+            .exec_stdio_read(&self.task_id, &self.exec_id, self.fd)
+        {
+            Ok(Some(data)) if data.is_empty() => {
+                self.eof = true;
+                Ok(0)
+            }
+            Ok(Some(data)) => {
+                let n = std::cmp::min(buf.len(), data.len());
+                buf[..n].copy_from_slice(&data[..n]);
+                if n < data.len() {
+                    self.buffer = data;
+                    self.buf_pos = n;
+                }
+                Ok(n)
+            }
+            Ok(None) => {
+                self.eof = true;
+                Ok(0)
+            }
+            Err(e) => Err(io::Error::new(io::ErrorKind::Other, e.to_string())),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1993,5 +2304,480 @@ mod tests {
             )
             .unwrap();
         assert_eq!(creds.token, "tok-xyz");
+    }
+
+    // --- ContainerProcess tests ---
+
+    use std::sync::Mutex;
+
+    enum MockCpResponse {
+        StdinWrite(Result<(), ModalError>),
+        StdioRead(Result<Option<Vec<u8>>, ModalError>),
+        ExecWait(Result<ContainerProcessExitStatus, ModalError>),
+    }
+
+    struct MockCpClient {
+        responses: Mutex<Vec<MockCpResponse>>,
+        stdin_writes: Mutex<Vec<(String, String, u64, Vec<u8>, bool)>>,
+        stdio_reads: Mutex<Vec<(String, String, FileDescriptor)>>,
+    }
+
+    impl MockCpClient {
+        fn new() -> Self {
+            Self {
+                responses: Mutex::new(Vec::new()),
+                stdin_writes: Mutex::new(Vec::new()),
+                stdio_reads: Mutex::new(Vec::new()),
+            }
+        }
+
+        fn push(&self, resp: MockCpResponse) {
+            self.responses.lock().unwrap().push(resp);
+        }
+
+        fn push_many(&self, resps: Vec<MockCpResponse>) {
+            self.responses.lock().unwrap().extend(resps);
+        }
+    }
+
+    impl ContainerProcessClient for MockCpClient {
+        fn exec_stdin_write(
+            &self,
+            task_id: &str,
+            exec_id: &str,
+            offset: u64,
+            data: &[u8],
+            eof: bool,
+        ) -> Result<(), ModalError> {
+            self.stdin_writes.lock().unwrap().push((
+                task_id.to_string(),
+                exec_id.to_string(),
+                offset,
+                data.to_vec(),
+                eof,
+            ));
+            match self.responses.lock().unwrap().remove(0) {
+                MockCpResponse::StdinWrite(r) => r,
+                _ => panic!("expected StdinWrite"),
+            }
+        }
+
+        fn exec_stdio_read(
+            &self,
+            task_id: &str,
+            exec_id: &str,
+            fd: FileDescriptor,
+        ) -> Result<Option<Vec<u8>>, ModalError> {
+            self.stdio_reads.lock().unwrap().push((
+                task_id.to_string(),
+                exec_id.to_string(),
+                fd,
+            ));
+            match self.responses.lock().unwrap().remove(0) {
+                MockCpResponse::StdioRead(r) => r,
+                _ => panic!("expected StdioRead"),
+            }
+        }
+
+        fn exec_wait(
+            &self,
+            _task_id: &str,
+            _exec_id: &str,
+            _deadline: Option<Duration>,
+        ) -> Result<ContainerProcessExitStatus, ModalError> {
+            match self.responses.lock().unwrap().remove(0) {
+                MockCpResponse::ExecWait(r) => r,
+                _ => panic!("expected ExecWait"),
+            }
+        }
+    }
+
+    fn make_cp(
+        client: Arc<MockCpClient>,
+    ) -> ContainerProcess<MockCpClient> {
+        ContainerProcess::new(
+            client,
+            "task-1".to_string(),
+            "exec-1".to_string(),
+            &SandboxExecParams::default(),
+            None,
+        )
+    }
+
+    #[test]
+    fn test_container_process_exit_status_code() {
+        assert_eq!(ContainerProcessExitStatus::Code(0).exit_code(), 0);
+        assert_eq!(ContainerProcessExitStatus::Code(1).exit_code(), 1);
+        assert_eq!(ContainerProcessExitStatus::Code(42).exit_code(), 42);
+    }
+
+    #[test]
+    fn test_container_process_exit_status_signal() {
+        // SIGTERM = 15 -> 128 + 15 = 143
+        assert_eq!(ContainerProcessExitStatus::Signal(15).exit_code(), 143);
+        // SIGKILL = 9 -> 128 + 9 = 137
+        assert_eq!(ContainerProcessExitStatus::Signal(9).exit_code(), 137);
+    }
+
+    #[test]
+    fn test_container_process_wait_exit_code() {
+        let mock = Arc::new(MockCpClient::new());
+        mock.push(MockCpResponse::ExecWait(Ok(
+            ContainerProcessExitStatus::Code(0),
+        )));
+        let cp = make_cp(mock);
+        assert_eq!(cp.wait().unwrap(), 0);
+    }
+
+    #[test]
+    fn test_container_process_wait_signal() {
+        let mock = Arc::new(MockCpClient::new());
+        mock.push(MockCpResponse::ExecWait(Ok(
+            ContainerProcessExitStatus::Signal(9),
+        )));
+        let cp = make_cp(mock);
+        assert_eq!(cp.wait().unwrap(), 137);
+    }
+
+    #[test]
+    fn test_container_process_wait_error() {
+        let mock = Arc::new(MockCpClient::new());
+        mock.push(MockCpResponse::ExecWait(Err(ModalError::ExecTimeout(
+            "timed out".to_string(),
+        ))));
+        let cp = make_cp(mock);
+        let err = cp.wait().unwrap_err();
+        assert!(matches!(err, ModalError::ExecTimeout(_)));
+    }
+
+    #[test]
+    fn test_container_process_stdin_write() {
+        let mock = Arc::new(MockCpClient::new());
+        mock.push(MockCpResponse::StdinWrite(Ok(())));
+        mock.push(MockCpResponse::StdinWrite(Ok(())));
+        let mut cp = make_cp(mock.clone());
+
+        use io::Write;
+        assert_eq!(cp.stdin().write(b"hello").unwrap(), 5);
+        assert_eq!(cp.stdin().write(b" world").unwrap(), 6);
+
+        let writes = mock.stdin_writes.lock().unwrap();
+        assert_eq!(writes.len(), 2);
+        // First write: offset 0
+        assert_eq!(writes[0].2, 0); // offset
+        assert_eq!(writes[0].3, b"hello");
+        assert!(!writes[0].4); // not eof
+        // Second write: offset 5
+        assert_eq!(writes[1].2, 5); // offset
+        assert_eq!(writes[1].3, b" world");
+        assert!(!writes[1].4); // not eof
+    }
+
+    #[test]
+    fn test_container_process_stdin_close() {
+        let mock = Arc::new(MockCpClient::new());
+        mock.push(MockCpResponse::StdinWrite(Ok(())));
+        let mut cp = make_cp(mock.clone());
+
+        cp.close_stdin().unwrap();
+        assert!(cp.stdin().is_closed());
+
+        let writes = mock.stdin_writes.lock().unwrap();
+        assert_eq!(writes.len(), 1);
+        assert!(writes[0].3.is_empty()); // empty data
+        assert!(writes[0].4); // eof = true
+    }
+
+    #[test]
+    fn test_container_process_stdin_close_idempotent() {
+        let mock = Arc::new(MockCpClient::new());
+        mock.push(MockCpResponse::StdinWrite(Ok(())));
+        let mut cp = make_cp(mock);
+
+        cp.close_stdin().unwrap();
+        // Second close should be a no-op (no mock response needed)
+        cp.close_stdin().unwrap();
+    }
+
+    #[test]
+    fn test_container_process_stdin_write_after_close() {
+        let mock = Arc::new(MockCpClient::new());
+        mock.push(MockCpResponse::StdinWrite(Ok(())));
+        let mut cp = make_cp(mock);
+
+        cp.close_stdin().unwrap();
+
+        use io::Write;
+        let err = cp.stdin().write(b"data").unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::BrokenPipe);
+    }
+
+    #[test]
+    fn test_container_process_stdin_write_empty() {
+        let mock = Arc::new(MockCpClient::new());
+        let mut cp = make_cp(mock);
+
+        use io::Write;
+        assert_eq!(cp.stdin().write(b"").unwrap(), 0);
+    }
+
+    #[test]
+    fn test_container_process_stdout_read() {
+        let mock = Arc::new(MockCpClient::new());
+        mock.push_many(vec![
+            MockCpResponse::StdioRead(Ok(Some(b"hello world".to_vec()))),
+            MockCpResponse::StdioRead(Ok(None)),
+        ]);
+        let mut cp = make_cp(mock.clone());
+
+        let output = cp.stdout().read_to_string_all().unwrap();
+        assert_eq!(output, "hello world");
+
+        let reads = mock.stdio_reads.lock().unwrap();
+        assert_eq!(reads.len(), 2);
+        assert_eq!(reads[0].2, FileDescriptor::Stdout);
+    }
+
+    #[test]
+    fn test_container_process_stderr_read() {
+        let mock = Arc::new(MockCpClient::new());
+        mock.push_many(vec![
+            MockCpResponse::StdioRead(Ok(Some(b"error msg".to_vec()))),
+            MockCpResponse::StdioRead(Ok(None)),
+        ]);
+        let mut cp = make_cp(mock.clone());
+
+        let output = cp.stderr().read_to_string_all().unwrap();
+        assert_eq!(output, "error msg");
+
+        let reads = mock.stdio_reads.lock().unwrap();
+        assert_eq!(reads.len(), 2);
+        assert_eq!(reads[0].2, FileDescriptor::Stderr);
+    }
+
+    #[test]
+    fn test_container_process_stdout_multiple_chunks() {
+        let mock = Arc::new(MockCpClient::new());
+        mock.push_many(vec![
+            MockCpResponse::StdioRead(Ok(Some(b"chunk1".to_vec()))),
+            MockCpResponse::StdioRead(Ok(Some(b"chunk2".to_vec()))),
+            MockCpResponse::StdioRead(Ok(Some(b"chunk3".to_vec()))),
+            MockCpResponse::StdioRead(Ok(None)),
+        ]);
+        let mut cp = make_cp(mock);
+
+        let output = cp.stdout().read_to_string_all().unwrap();
+        assert_eq!(output, "chunk1chunk2chunk3");
+    }
+
+    #[test]
+    fn test_container_process_stdout_empty_then_data() {
+        let mock = Arc::new(MockCpClient::new());
+        mock.push_many(vec![
+            MockCpResponse::StdioRead(Ok(Some(Vec::new()))), // empty = EOF
+        ]);
+        let mut cp = make_cp(mock);
+
+        let output = cp.stdout().read_to_end_all().unwrap();
+        assert!(output.is_empty());
+    }
+
+    #[test]
+    fn test_container_process_stdout_buffering() {
+        // Test that when server returns more data than the read buffer can hold,
+        // the excess is buffered and returned on subsequent reads.
+        let mock = Arc::new(MockCpClient::new());
+        mock.push_many(vec![
+            MockCpResponse::StdioRead(Ok(Some(b"abcdefghij".to_vec()))),
+            MockCpResponse::StdioRead(Ok(None)),
+        ]);
+        let mut cp = make_cp(mock.clone());
+
+        use io::Read;
+        let mut buf = [0u8; 4];
+        // First read: gets "abcd", buffers "efghij"
+        let n = cp.stdout().read(&mut buf).unwrap();
+        assert_eq!(n, 4);
+        assert_eq!(&buf[..n], b"abcd");
+
+        // Second read: drains from buffer "efgh"
+        let n = cp.stdout().read(&mut buf).unwrap();
+        assert_eq!(n, 4);
+        assert_eq!(&buf[..n], b"efgh");
+
+        // Third read: drains remainder "ij"
+        let n = cp.stdout().read(&mut buf).unwrap();
+        assert_eq!(n, 2);
+        assert_eq!(&buf[..n], b"ij");
+
+        // Fourth read: fetches next chunk -> EOF
+        let n = cp.stdout().read(&mut buf).unwrap();
+        assert_eq!(n, 0);
+
+        // Only 2 gRPC calls were made (one data, one EOF)
+        assert_eq!(mock.stdio_reads.lock().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn test_container_process_stdout_read_error() {
+        let mock = Arc::new(MockCpClient::new());
+        mock.push(MockCpResponse::StdioRead(Err(ModalError::Other(
+            "stream failed".to_string(),
+        ))));
+        let mut cp = make_cp(mock);
+
+        use io::Read;
+        let mut buf = [0u8; 64];
+        let err = cp.stdout().read(&mut buf).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::Other);
+        assert!(err.to_string().contains("stream failed"));
+    }
+
+    #[test]
+    fn test_container_process_stdout_ignored() {
+        let mock = Arc::new(MockCpClient::new());
+        // No StdioRead responses needed — ignored streams are immediate EOF
+        let mut cp = ContainerProcess::new(
+            mock,
+            "task-1".to_string(),
+            "exec-1".to_string(),
+            &SandboxExecParams {
+                stdout: StreamConfig::Ignore,
+                ..Default::default()
+            },
+            None,
+        );
+
+        use io::Read;
+        let mut buf = [0u8; 64];
+        let n = cp.stdout().read(&mut buf).unwrap();
+        assert_eq!(n, 0); // immediate EOF
+    }
+
+    #[test]
+    fn test_container_process_stderr_ignored() {
+        let mock = Arc::new(MockCpClient::new());
+        let mut cp = ContainerProcess::new(
+            mock,
+            "task-1".to_string(),
+            "exec-1".to_string(),
+            &SandboxExecParams {
+                stderr: StreamConfig::Ignore,
+                ..Default::default()
+            },
+            None,
+        );
+
+        use io::Read;
+        let mut buf = [0u8; 64];
+        let n = cp.stderr().read(&mut buf).unwrap();
+        assert_eq!(n, 0);
+    }
+
+    #[test]
+    fn test_container_process_exec_id_and_task_id() {
+        let mock = Arc::new(MockCpClient::new());
+        let cp = ContainerProcess::new(
+            mock,
+            "my-task".to_string(),
+            "my-exec".to_string(),
+            &SandboxExecParams::default(),
+            None,
+        );
+        assert_eq!(cp.exec_id(), "my-exec");
+        assert_eq!(cp.task_id(), "my-task");
+    }
+
+    #[test]
+    fn test_container_process_full_lifecycle() {
+        // Simulates: write stdin, close stdin, read stdout, read stderr, wait
+        let mock = Arc::new(MockCpClient::new());
+        mock.push_many(vec![
+            // stdin writes
+            MockCpResponse::StdinWrite(Ok(())),
+            MockCpResponse::StdinWrite(Ok(())), // close
+            // stdout reads
+            MockCpResponse::StdioRead(Ok(Some(b"output line 1\n".to_vec()))),
+            MockCpResponse::StdioRead(Ok(Some(b"output line 2\n".to_vec()))),
+            MockCpResponse::StdioRead(Ok(None)),
+            // stderr reads
+            MockCpResponse::StdioRead(Ok(Some(b"warning\n".to_vec()))),
+            MockCpResponse::StdioRead(Ok(None)),
+            // wait
+            MockCpResponse::ExecWait(Ok(ContainerProcessExitStatus::Code(0))),
+        ]);
+        let mut cp = make_cp(mock);
+
+        // Write to stdin
+        use io::Write;
+        cp.stdin().write_all(b"input data").unwrap();
+        cp.close_stdin().unwrap();
+
+        // Read stdout
+        let stdout = cp.stdout().read_to_string_all().unwrap();
+        assert_eq!(stdout, "output line 1\noutput line 2\n");
+
+        // Read stderr
+        let stderr = cp.stderr().read_to_string_all().unwrap();
+        assert_eq!(stderr, "warning\n");
+
+        // Wait for exit
+        assert_eq!(cp.wait().unwrap(), 0);
+    }
+
+    #[test]
+    fn test_container_process_stdin_write_error() {
+        let mock = Arc::new(MockCpClient::new());
+        mock.push(MockCpResponse::StdinWrite(Err(ModalError::Other(
+            "write failed".to_string(),
+        ))));
+        let mut cp = make_cp(mock);
+
+        use io::Write;
+        let err = cp.stdin().write(b"data").unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::Other);
+        assert!(err.to_string().contains("write failed"));
+    }
+
+    #[test]
+    fn test_container_process_with_deadline() {
+        let mock = Arc::new(MockCpClient::new());
+        mock.push(MockCpResponse::ExecWait(Ok(
+            ContainerProcessExitStatus::Code(0),
+        )));
+
+        let cp = ContainerProcess::new(
+            mock,
+            "task-1".to_string(),
+            "exec-1".to_string(),
+            &SandboxExecParams {
+                timeout: Duration::from_secs(30),
+                ..Default::default()
+            },
+            Some(Duration::from_secs(30)),
+        );
+
+        assert_eq!(cp.wait().unwrap(), 0);
+    }
+
+    #[test]
+    fn test_container_process_read_to_end_binary() {
+        let mock = Arc::new(MockCpClient::new());
+        let binary_data: Vec<u8> = (0..=255).collect();
+        mock.push_many(vec![
+            MockCpResponse::StdioRead(Ok(Some(binary_data.clone()))),
+            MockCpResponse::StdioRead(Ok(None)),
+        ]);
+        let mut cp = make_cp(mock);
+
+        let output = cp.stdout().read_to_end_all().unwrap();
+        assert_eq!(output, binary_data);
+    }
+
+    #[test]
+    fn test_file_descriptor_equality() {
+        assert_eq!(FileDescriptor::Stdout, FileDescriptor::Stdout);
+        assert_eq!(FileDescriptor::Stderr, FileDescriptor::Stderr);
+        assert_ne!(FileDescriptor::Stdout, FileDescriptor::Stderr);
     }
 }
