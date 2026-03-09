@@ -1,11 +1,13 @@
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::config::{environment_name, Profile};
 use crate::ephemeral::start_ephemeral_heartbeat;
 use crate::error::ModalError;
+use crate::pickle::{pickle_deserialize, pickle_serialize, PickleValue};
 
 const QUEUE_DEFAULT_PARTITION_TTL: Duration = Duration::from_secs(24 * 60 * 60);
+const QUEUE_INITIAL_PUT_BACKOFF: Duration = Duration::from_millis(100);
 
 /// Queue is a distributed, FIFO queue for data flow in Modal Apps.
 #[derive(Debug, Clone)]
@@ -122,6 +124,13 @@ pub struct QueuePutManyParams {
     pub partition_ttl: Duration,
 }
 
+/// QueueIterateParams are options for Queue.iterate.
+#[derive(Debug, Clone, Default)]
+pub struct QueueIterateParams {
+    pub item_poll_timeout: Duration,
+    pub partition: String,
+}
+
 /// QueueLenParams are options for Queue.len.
 #[derive(Debug, Clone, Default)]
 pub struct QueueLenParams {
@@ -168,6 +177,31 @@ pub trait QueueGrpcClient: Send + Sync {
         partition_key: Option<&[u8]>,
         total: bool,
     ) -> Result<i32, ModalError>;
+
+    fn queue_get(
+        &self,
+        queue_id: &str,
+        partition_key: Option<&[u8]>,
+        timeout: f32,
+        n_values: i32,
+    ) -> Result<Vec<Vec<u8>>, ModalError>;
+
+    fn queue_put(
+        &self,
+        queue_id: &str,
+        values: Vec<Vec<u8>>,
+        partition_key: Option<&[u8]>,
+        partition_ttl_seconds: i32,
+    ) -> Result<(), ModalError>;
+
+    /// Returns items as (entry_id, value) pairs.
+    fn queue_next_items(
+        &self,
+        queue_id: &str,
+        partition_key: Option<&[u8]>,
+        item_poll_timeout: f32,
+        last_entry_id: &str,
+    ) -> Result<Vec<(String, Vec<u8>)>, ModalError>;
 }
 
 /// Implementation of QueueService backed by a gRPC client.
@@ -310,6 +344,221 @@ impl Queue {
         let key = validate_partition_key(&params.partition)?;
         client.queue_len(&self.queue_id, key.as_deref(), params.total)
     }
+
+    /// Internal get helper used by both get() and get_many().
+    fn get_internal<C: QueueGrpcClient>(
+        &self,
+        client: &C,
+        n: i32,
+        params: Option<&QueueGetParams>,
+    ) -> Result<Vec<PickleValue>, ModalError> {
+        let default_params = QueueGetParams::default();
+        let params = params.unwrap_or(&default_params);
+        let partition_key = validate_partition_key(&params.partition)?;
+
+        let start = Instant::now();
+        let mut poll_timeout = Duration::from_secs(50);
+        if let Some(timeout) = params.timeout {
+            if poll_timeout > timeout {
+                poll_timeout = timeout;
+            }
+        }
+
+        loop {
+            let raw_values = client.queue_get(
+                &self.queue_id,
+                partition_key.as_deref(),
+                poll_timeout.as_secs_f32(),
+                n,
+            )?;
+
+            if !raw_values.is_empty() {
+                let mut out = Vec::with_capacity(raw_values.len());
+                for raw in raw_values {
+                    let v = pickle_deserialize(&raw)?;
+                    out.push(v);
+                }
+                return Ok(out);
+            }
+
+            if let Some(timeout) = params.timeout {
+                let elapsed = start.elapsed();
+                if elapsed >= timeout {
+                    return Err(ModalError::QueueEmpty(format!(
+                        "Queue {} did not return values within {:?}",
+                        self.queue_id, timeout
+                    )));
+                }
+                let remaining = timeout - elapsed;
+                poll_timeout = poll_timeout.min(remaining);
+            }
+        }
+    }
+
+    /// Get removes and returns one item from the Queue (blocking by default).
+    ///
+    /// By default, this will wait until at least one item is present.
+    /// If `timeout` is set, returns `QueueEmptyError` if no items are available
+    /// within that timeout.
+    pub fn get<C: QueueGrpcClient>(
+        &self,
+        client: &C,
+        params: Option<&QueueGetParams>,
+    ) -> Result<PickleValue, ModalError> {
+        let vals = self.get_internal(client, 1, params)?;
+        Ok(vals.into_iter().next().unwrap())
+    }
+
+    /// GetMany removes up to n items from the Queue.
+    ///
+    /// By default, this will wait until at least one item is present.
+    /// If `timeout` is set, returns `QueueEmptyError` if no items are available
+    /// within that timeout.
+    pub fn get_many<C: QueueGrpcClient>(
+        &self,
+        client: &C,
+        n: i32,
+        params: Option<&QueueGetManyParams>,
+    ) -> Result<Vec<PickleValue>, ModalError> {
+        let get_params = params.map(|p| QueueGetParams {
+            timeout: p.timeout,
+            partition: p.partition.clone(),
+        });
+        self.get_internal(client, n, get_params.as_ref())
+    }
+
+    /// Internal put helper used by both put() and put_many().
+    fn put_internal<C: QueueGrpcClient>(
+        &self,
+        client: &C,
+        values: &[PickleValue],
+        params: Option<&QueuePutParams>,
+    ) -> Result<(), ModalError> {
+        let default_params = QueuePutParams::default();
+        let params = params.unwrap_or(&default_params);
+        let key = validate_partition_key(&params.partition)?;
+
+        let mut values_encoded = Vec::with_capacity(values.len());
+        for v in values {
+            let b = pickle_serialize(v)?;
+            values_encoded.push(b);
+        }
+
+        let deadline = params.timeout.map(|t| Instant::now() + t);
+        let mut delay = QUEUE_INITIAL_PUT_BACKOFF;
+        let ttl = params.effective_partition_ttl();
+
+        loop {
+            let result = client.queue_put(
+                &self.queue_id,
+                values_encoded.clone(),
+                key.as_deref(),
+                ttl.as_secs() as i32,
+            );
+
+            match result {
+                Ok(()) => return Ok(()),
+                Err(ModalError::Grpc(ref status))
+                    if status.code() == tonic::Code::ResourceExhausted =>
+                {
+                    // Queue is full — retry with exponential backoff
+                    delay = delay.saturating_mul(2).min(Duration::from_secs(30));
+                    if let Some(dl) = deadline {
+                        let remaining = dl.saturating_duration_since(Instant::now());
+                        if remaining.is_zero() {
+                            return Err(ModalError::QueueFull(format!(
+                                "Put failed on {}",
+                                self.queue_id
+                            )));
+                        }
+                        delay = delay.min(remaining);
+                    }
+                    std::thread::sleep(delay);
+                }
+                Err(e) => return Err(e),
+            }
+        }
+    }
+
+    /// Put adds a single item to the end of the Queue.
+    ///
+    /// If the Queue is full, retries with exponential backoff until
+    /// `timeout` is reached or indefinitely if timeout is not set.
+    /// Returns `QueueFullError` if the Queue is still full after timeout.
+    pub fn put<C: QueueGrpcClient>(
+        &self,
+        client: &C,
+        value: impl Into<PickleValue>,
+        params: Option<&QueuePutParams>,
+    ) -> Result<(), ModalError> {
+        self.put_internal(client, &[value.into()], params)
+    }
+
+    /// PutMany adds multiple items to the end of the Queue.
+    pub fn put_many<C: QueueGrpcClient>(
+        &self,
+        client: &C,
+        values: Vec<PickleValue>,
+        params: Option<&QueuePutManyParams>,
+    ) -> Result<(), ModalError> {
+        let put_params = params.map(|p| QueuePutParams {
+            timeout: p.timeout,
+            partition: p.partition.clone(),
+            partition_ttl: p.partition_ttl,
+        });
+        self.put_internal(client, &values, put_params.as_ref())
+    }
+
+    /// Iterate yields items from the Queue until it is idle.
+    ///
+    /// Returns a Vec of items (since Rust doesn't have Go-style iterators with yield).
+    /// Stops when no new items arrive within `item_poll_timeout`.
+    pub fn iterate<C: QueueGrpcClient>(
+        &self,
+        client: &C,
+        params: Option<&QueueIterateParams>,
+    ) -> Result<Vec<PickleValue>, ModalError> {
+        let default_params = QueueIterateParams::default();
+        let params = params.unwrap_or(&default_params);
+
+        let partition_key = validate_partition_key(&params.partition)?;
+        let item_poll = params.item_poll_timeout;
+        let max_poll = Duration::from_secs(30);
+        let mut last_entry_id = String::new();
+        let mut results = Vec::new();
+
+        let mut fetch_deadline = Instant::now() + item_poll;
+
+        loop {
+            let remaining = fetch_deadline.saturating_duration_since(Instant::now());
+            let poll_duration = remaining.min(max_poll);
+
+            // If item_poll_timeout is zero and we've already fetched once, exit
+            if item_poll.is_zero() && !results.is_empty() {
+                break;
+            }
+
+            let items = client.queue_next_items(
+                &self.queue_id,
+                partition_key.as_deref(),
+                poll_duration.as_secs_f32(),
+                &last_entry_id,
+            )?;
+
+            if !items.is_empty() {
+                for (entry_id, raw) in items {
+                    let v = pickle_deserialize(&raw)?;
+                    results.push(v);
+                    last_entry_id = entry_id;
+                }
+                fetch_deadline = Instant::now() + item_poll;
+            } else if Instant::now() >= fetch_deadline {
+                break;
+            }
+        }
+
+        Ok(results)
+    }
 }
 
 fn is_not_found_error(err: &ModalError) -> bool {
@@ -333,11 +582,15 @@ mod tests {
         responses: Mutex<Vec<MockResponse>>,
     }
 
+    #[allow(clippy::type_complexity)]
     enum MockResponse {
         GetOrCreate(Result<String, ModalError>),
         Delete(Result<(), ModalError>),
         Clear(Result<(), ModalError>),
         Len(Result<i32, ModalError>),
+        Get(Result<Vec<Vec<u8>>, ModalError>),
+        Put(Result<(), ModalError>),
+        NextItems(Result<Vec<(String, Vec<u8>)>, ModalError>),
     }
 
     impl MockQueueGrpcClient {
@@ -373,6 +626,27 @@ mod tests {
                 .lock()
                 .unwrap()
                 .push(MockResponse::Len(result));
+        }
+
+        fn push_get(&self, result: Result<Vec<Vec<u8>>, ModalError>) {
+            self.responses
+                .lock()
+                .unwrap()
+                .push(MockResponse::Get(result));
+        }
+
+        fn push_put(&self, result: Result<(), ModalError>) {
+            self.responses
+                .lock()
+                .unwrap()
+                .push(MockResponse::Put(result));
+        }
+
+        fn push_next_items(&self, result: Result<Vec<(String, Vec<u8>)>, ModalError>) {
+            self.responses
+                .lock()
+                .unwrap()
+                .push(MockResponse::NextItems(result));
         }
     }
 
@@ -424,6 +698,48 @@ mod tests {
             let mut responses = self.responses.lock().unwrap();
             match responses.remove(0) {
                 MockResponse::Len(r) => r,
+                _ => panic!("unexpected mock response type"),
+            }
+        }
+
+        fn queue_get(
+            &self,
+            _queue_id: &str,
+            _partition_key: Option<&[u8]>,
+            _timeout: f32,
+            _n_values: i32,
+        ) -> Result<Vec<Vec<u8>>, ModalError> {
+            let mut responses = self.responses.lock().unwrap();
+            match responses.remove(0) {
+                MockResponse::Get(r) => r,
+                _ => panic!("unexpected mock response type"),
+            }
+        }
+
+        fn queue_put(
+            &self,
+            _queue_id: &str,
+            _values: Vec<Vec<u8>>,
+            _partition_key: Option<&[u8]>,
+            _partition_ttl_seconds: i32,
+        ) -> Result<(), ModalError> {
+            let mut responses = self.responses.lock().unwrap();
+            match responses.remove(0) {
+                MockResponse::Put(r) => r,
+                _ => panic!("unexpected mock response type"),
+            }
+        }
+
+        fn queue_next_items(
+            &self,
+            _queue_id: &str,
+            _partition_key: Option<&[u8]>,
+            _item_poll_timeout: f32,
+            _last_entry_id: &str,
+        ) -> Result<Vec<(String, Vec<u8>)>, ModalError> {
+            let mut responses = self.responses.lock().unwrap();
+            match responses.remove(0) {
+                MockResponse::NextItems(r) => r,
                 _ => panic!("unexpected mock response type"),
             }
         }
@@ -599,5 +915,327 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(params.effective_partition_ttl(), Duration::from_secs(3600));
+    }
+
+    // Helper to pickle-encode a value for mock responses
+    fn pickle_encode(v: &PickleValue) -> Vec<u8> {
+        pickle_serialize(v).unwrap()
+    }
+
+    #[test]
+    fn test_queue_put_single() {
+        let mock = MockQueueGrpcClient::new();
+        mock.push_put(Ok(()));
+        let queue = Queue::new("qu-test-123".to_string(), "test".to_string());
+
+        queue.put(&mock, 42i64, None).unwrap();
+    }
+
+    #[test]
+    fn test_queue_put_string() {
+        let mock = MockQueueGrpcClient::new();
+        mock.push_put(Ok(()));
+        let queue = Queue::new("qu-test-123".to_string(), "test".to_string());
+
+        queue.put(&mock, "hello", None).unwrap();
+    }
+
+    #[test]
+    fn test_queue_put_many() {
+        let mock = MockQueueGrpcClient::new();
+        mock.push_put(Ok(()));
+        let queue = Queue::new("qu-test-123".to_string(), "test".to_string());
+
+        queue
+            .put_many(
+                &mock,
+                vec![
+                    PickleValue::Int(1),
+                    PickleValue::Int(2),
+                    PickleValue::Int(3),
+                ],
+                None,
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn test_queue_put_queue_full_with_timeout() {
+        let mock = MockQueueGrpcClient::new();
+        // Queue full on first attempt
+        mock.push_put(Err(ModalError::Grpc(tonic::Status::new(
+            tonic::Code::ResourceExhausted,
+            "queue full",
+        ))));
+        // Still full on second attempt
+        mock.push_put(Err(ModalError::Grpc(tonic::Status::new(
+            tonic::Code::ResourceExhausted,
+            "queue full",
+        ))));
+
+        let queue = Queue::new("qu-test-123".to_string(), "test".to_string());
+        let timeout = Duration::from_millis(50);
+        let err = queue
+            .put(
+                &mock,
+                42i64,
+                Some(&QueuePutParams {
+                    timeout: Some(timeout),
+                    ..Default::default()
+                }),
+            )
+            .unwrap_err();
+
+        assert!(matches!(err, ModalError::QueueFull(_)));
+    }
+
+    #[test]
+    fn test_queue_put_non_exhausted_error_propagates() {
+        let mock = MockQueueGrpcClient::new();
+        mock.push_put(Err(ModalError::Grpc(tonic::Status::internal(
+            "server error",
+        ))));
+
+        let queue = Queue::new("qu-test-123".to_string(), "test".to_string());
+        let err = queue.put(&mock, 42i64, None).unwrap_err();
+        assert!(matches!(err, ModalError::Grpc(_)));
+    }
+
+    #[test]
+    fn test_queue_get_single() {
+        let mock = MockQueueGrpcClient::new();
+        let encoded = pickle_encode(&PickleValue::Int(123));
+        mock.push_get(Ok(vec![encoded]));
+
+        let queue = Queue::new("qu-test-123".to_string(), "test".to_string());
+        let result = queue.get(&mock, None).unwrap();
+        assert_eq!(result, PickleValue::Int(123));
+    }
+
+    #[test]
+    fn test_queue_get_string() {
+        let mock = MockQueueGrpcClient::new();
+        let encoded = pickle_encode(&PickleValue::String("hello world".to_string()));
+        mock.push_get(Ok(vec![encoded]));
+
+        let queue = Queue::new("qu-test-123".to_string(), "test".to_string());
+        let result = queue.get(&mock, None).unwrap();
+        assert_eq!(result, PickleValue::String("hello world".to_string()));
+    }
+
+    #[test]
+    fn test_queue_get_empty_with_timeout() {
+        let mock = MockQueueGrpcClient::new();
+        // Return empty (no values available)
+        mock.push_get(Ok(vec![]));
+
+        let queue = Queue::new("qu-test-123".to_string(), "test".to_string());
+        let timeout = Duration::ZERO;
+        let err = queue
+            .get(
+                &mock,
+                Some(&QueueGetParams {
+                    timeout: Some(timeout),
+                    ..Default::default()
+                }),
+            )
+            .unwrap_err();
+
+        assert!(matches!(err, ModalError::QueueEmpty(_)));
+    }
+
+    #[test]
+    fn test_queue_get_many() {
+        let mock = MockQueueGrpcClient::new();
+        let values = vec![
+            pickle_encode(&PickleValue::Int(1)),
+            pickle_encode(&PickleValue::Int(2)),
+            pickle_encode(&PickleValue::Int(3)),
+        ];
+        mock.push_get(Ok(values));
+
+        let queue = Queue::new("qu-test-123".to_string(), "test".to_string());
+        let results = queue.get_many(&mock, 3, None).unwrap();
+        assert_eq!(
+            results,
+            vec![
+                PickleValue::Int(1),
+                PickleValue::Int(2),
+                PickleValue::Int(3),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_queue_get_with_partition() {
+        let mock = MockQueueGrpcClient::new();
+        let encoded = pickle_encode(&PickleValue::Int(42));
+        mock.push_get(Ok(vec![encoded]));
+
+        let queue = Queue::new("qu-test-123".to_string(), "test".to_string());
+        let result = queue
+            .get(
+                &mock,
+                Some(&QueueGetParams {
+                    partition: "my-partition".to_string(),
+                    ..Default::default()
+                }),
+            )
+            .unwrap();
+        assert_eq!(result, PickleValue::Int(42));
+    }
+
+    #[test]
+    fn test_queue_put_with_custom_ttl() {
+        let mock = MockQueueGrpcClient::new();
+        mock.push_put(Ok(()));
+
+        let queue = Queue::new("qu-test-123".to_string(), "test".to_string());
+        queue
+            .put(
+                &mock,
+                42i64,
+                Some(&QueuePutParams {
+                    partition_ttl: Duration::from_secs(3600),
+                    ..Default::default()
+                }),
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn test_queue_iterate_returns_items() {
+        let mock = MockQueueGrpcClient::new();
+        // First call returns items
+        let items = vec![
+            (
+                "entry-1".to_string(),
+                pickle_encode(&PickleValue::Int(10)),
+            ),
+            (
+                "entry-2".to_string(),
+                pickle_encode(&PickleValue::Int(20)),
+            ),
+        ];
+        mock.push_next_items(Ok(items));
+        // Second call returns empty → signals done (timeout=0 means exit after first batch)
+        mock.push_next_items(Ok(vec![]));
+
+        let queue = Queue::new("qu-test-123".to_string(), "test".to_string());
+        let results = queue.iterate(&mock, None).unwrap();
+        assert_eq!(
+            results,
+            vec![PickleValue::Int(10), PickleValue::Int(20)]
+        );
+    }
+
+    #[test]
+    fn test_queue_iterate_empty() {
+        let mock = MockQueueGrpcClient::new();
+        mock.push_next_items(Ok(vec![]));
+
+        let queue = Queue::new("qu-test-123".to_string(), "test".to_string());
+        let results = queue.iterate(&mock, None).unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_queue_iterate_with_poll_timeout() {
+        let mock = MockQueueGrpcClient::new();
+        let items = vec![(
+            "entry-1".to_string(),
+            pickle_encode(&PickleValue::String("data".to_string())),
+        )];
+        mock.push_next_items(Ok(items));
+        // After receiving items, poll again with timeout — returns empty
+        mock.push_next_items(Ok(vec![]));
+
+        let queue = Queue::new("qu-test-123".to_string(), "test".to_string());
+        let results = queue
+            .iterate(
+                &mock,
+                Some(&QueueIterateParams {
+                    item_poll_timeout: Duration::ZERO,
+                    ..Default::default()
+                }),
+            )
+            .unwrap();
+        assert_eq!(
+            results,
+            vec![PickleValue::String("data".to_string())]
+        );
+    }
+
+    #[test]
+    fn test_queue_iterate_error_propagates() {
+        let mock = MockQueueGrpcClient::new();
+        mock.push_next_items(Err(ModalError::Grpc(tonic::Status::internal(
+            "server error",
+        ))));
+
+        let queue = Queue::new("qu-test-123".to_string(), "test".to_string());
+        let err = queue.iterate(&mock, None).unwrap_err();
+        assert!(matches!(err, ModalError::Grpc(_)));
+    }
+
+    #[test]
+    fn test_queue_put_and_get_roundtrip_types() {
+        // Test that various types survive put→serialize→deserialize→get
+        let test_values: Vec<PickleValue> = vec![
+            PickleValue::None,
+            PickleValue::Bool(true),
+            PickleValue::Bool(false),
+            PickleValue::Int(0),
+            PickleValue::Int(-42),
+            PickleValue::Int(i64::MAX),
+            PickleValue::Float(3.14),
+            PickleValue::String("hello 🦀".to_string()),
+            PickleValue::Bytes(vec![0, 1, 2, 255]),
+            PickleValue::List(vec![PickleValue::Int(1), PickleValue::Int(2)]),
+        ];
+
+        for val in test_values {
+            let encoded = pickle_encode(&val);
+            let decoded = pickle_deserialize(&encoded).unwrap();
+            // NaN needs special handling but we don't test it here
+            assert_eq!(decoded, val, "roundtrip failed for {:?}", val);
+        }
+    }
+
+    #[test]
+    fn test_queue_get_with_invalid_partition() {
+        let mock = MockQueueGrpcClient::new();
+        let queue = Queue::new("qu-test-123".to_string(), "test".to_string());
+
+        let long_partition = "a".repeat(65);
+        let err = queue
+            .get(
+                &mock,
+                Some(&QueueGetParams {
+                    partition: long_partition,
+                    ..Default::default()
+                }),
+            )
+            .unwrap_err();
+        assert!(err.to_string().contains("1–64 bytes long"));
+    }
+
+    #[test]
+    fn test_queue_put_with_invalid_partition() {
+        let mock = MockQueueGrpcClient::new();
+        let queue = Queue::new("qu-test-123".to_string(), "test".to_string());
+
+        let long_partition = "a".repeat(65);
+        let err = queue
+            .put(
+                &mock,
+                42i64,
+                Some(&QueuePutParams {
+                    partition: long_partition,
+                    ..Default::default()
+                }),
+            )
+            .unwrap_err();
+        assert!(err.to_string().contains("1–64 bytes long"));
     }
 }

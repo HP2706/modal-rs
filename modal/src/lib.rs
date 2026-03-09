@@ -21,6 +21,7 @@ pub mod sandbox_filesystem;
 pub mod invocation;
 pub mod interceptors;
 pub mod ephemeral;
+pub mod pickle;
 
 #[cfg(test)]
 pub(crate) mod grpc_mock;
