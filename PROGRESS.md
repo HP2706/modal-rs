@@ -1,5 +1,31 @@
 # Modal Rust SDK Progress
 
+## 2026-03-09 — Sandbox module completion
+
+### What was done
+Extended the Sandbox module (`modal/src/sandbox.rs`) with all missing Go SDK methods:
+- **Service methods**: FromID, FromName (with NotFound mapping), List (paginated), Poll
+- **Tag management**: SetTags, GetTags
+- **Tunnel support**: Tunnels (with timeout), Tunnel type with url()/tls_socket()/tcp_socket()
+- **Filesystem ops**: SnapshotFilesystem, SnapshotDirectory, MountImage (with empty dir support)
+- **Connect tokens**: CreateConnectToken with SandboxCreateConnectCredentials
+- **Helper types**: GenericResultStatus, get_return_code, SandboxPollResult, SandboxListEntry, etc.
+- 34 new sandbox tests (329 total)
+
+### Test counts
+- Before: 295 unit tests
+- After: 329 unit tests (34 new)
+- All passing
+
+### What's next (priority order)
+1. **Sandbox I/O streaming and ContainerProcess** — Stdin/Stdout/Stderr, lazy stream readers, ContainerProcess type
+2. **Queue Put/Get/Iterate** — Need pickle serialization infrastructure
+3. **Ephemeral module** — Heartbeat/ephemeral object support (ephemeral.go)
+4. **Integration tests** — All 17 test files in `modal/tests/` are empty
+5. **Examples** — 26 Go examples need Rust equivalents
+
+---
+
 ## 2026-03-09 — Image.Build() layer-by-layer implementation
 
 ### What was done
