@@ -77,8 +77,8 @@
       "category": "source",
       "go_reference": "libmodal/modal-go/ephemeral.go",
       "priority": "medium",
-      "status": "todo",
-      "notes": "Heartbeat/ephemeral object support. No Rust equivalent yet."
+      "status": "done",
+      "notes": "Shared start_ephemeral_heartbeat() with 3 tests. Used by volume.rs and queue.rs. Complete."
     },
     {
       "id": "F009",

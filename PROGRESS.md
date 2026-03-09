@@ -1,5 +1,27 @@
 # Modal Rust SDK Progress
 
+## 2026-03-09 — Ephemeral module implementation
+
+### What was done
+Created dedicated `ephemeral.rs` module (`modal/src/ephemeral.rs`) matching Go SDK's `ephemeral.go`:
+- **`start_ephemeral_heartbeat`**: Shared function that spawns a tokio task running a heartbeat at 300s intervals, cancellable via `Notify`
+- **`EPHEMERAL_OBJECT_HEARTBEAT_SLEEP`**: Shared constant (300s)
+- Refactored `volume.rs` to use shared module instead of inline implementation
+- Fixed `queue.rs` `ephemeral()` method which was missing the heartbeat start call
+- 3 new unit tests (cancel, fires on interval, ignores errors)
+
+### Test counts
+- Before: 329 unit tests
+- After: 332 unit tests (3 new)
+- All passing
+
+### What's next (priority order)
+1. **Sandbox I/O streaming and ContainerProcess** — Stdin/Stdout/Stderr, lazy stream readers, ContainerProcess type (F017 in_progress)
+2. **Integration tests** — All 17 test files in `modal/tests/` are empty (F023)
+3. **Examples** — 26 Go examples need Rust equivalents (F024)
+
+---
+
 ## 2026-03-09 — Sandbox module completion
 
 ### What was done
