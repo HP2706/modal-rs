@@ -269,6 +269,16 @@
       "priority": "low",
       "status": "done",
       "notes": "Replaced 4 unimplemented!() stubs in function.rs MockInvocationClient with proper response-queue mock implementations (attempt_start, attempt_await, attempt_retry, blob_get). Complete."
+    },
+    {
+      "id": "F029",
+      "name": "Client service accessors and missing service traits",
+      "module": "client",
+      "category": "source",
+      "go_reference": "libmodal/modal-go/client.go",
+      "priority": "high",
+      "status": "done",
+      "notes": "Added AppService, ClsService, CloudBucketMountService traits. Rewrote Client struct with 11 service accessors (Box<dyn Trait>) matching Go SDK. Added ClientBuilder for construction. 12 new tests. Complete."
     }
   ]
 }

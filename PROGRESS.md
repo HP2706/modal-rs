@@ -1,5 +1,28 @@
 # Modal Rust SDK Progress
 
+## 2026-03-09 — Client service accessors and missing service traits
+
+### What was done
+Added 3 missing service traits and wired up the Client struct with 11 service accessors matching the Go SDK (F029):
+
+1. **AppService** (`app.rs`): `AppService` trait, `AppGrpcClient` trait, `AppServiceImpl` with `from_name()` — matches Go's `AppService.FromName()`. 3 new tests.
+2. **ClsService** (`cls.rs`): `ClsService` trait, `ClsGrpcClient` trait, `ClsServiceImpl` with `from_name()` — matches Go's `ClsService.FromName()` including parameter format validation. 3 new tests.
+3. **CloudBucketMountService** (`cloud_bucket_mount.rs`): `CloudBucketMountService` trait, `CloudBucketMountServiceImpl` delegating to existing `new_cloud_bucket_mount()`.
+4. **Client** (`client.rs`): Rewrote Client struct with `Box<dyn Trait>` service accessors for all 11 services (Apps, CloudBucketMounts, Cls, Functions, FunctionCalls, Images, Proxies, Queues, Sandboxes, Secrets, Volumes). Added `ClientBuilder` for flexible construction with custom/mock services. 6 new tests.
+5. **Integration test fix** (`tests/common/mod.rs`): Removed obsolete `Client::with_options()` reference.
+
+### Test counts
+- Before: 423 unit tests + 174 integration tests
+- After: 435 unit tests + 174 integration tests (12 new)
+- All passing
+
+### What's next
+- SecretService is missing `from_name()` and `delete()` methods (Go SDK has both)
+- Config functions (`read_config_file`, `get_profile`) are now unused — could be cleaned up or reconnected when gRPC client wiring is added
+- client_test.go equivalent (requires real gRPC connections)
+
+---
+
 ## 2026-03-09 — Remove unimplemented!() stubs from test mocks
 
 ### What was done
