@@ -1,10 +1,8 @@
 use std::sync::Arc;
-use std::time::Duration;
 
 use crate::config::{environment_name, Profile};
+use crate::ephemeral::start_ephemeral_heartbeat;
 use crate::error::ModalError;
-
-const EPHEMERAL_OBJECT_HEARTBEAT_SLEEP: Duration = Duration::from_secs(300);
 
 /// Volume represents a Modal Volume that provides persistent storage.
 #[derive(Debug, Clone)]
@@ -90,25 +88,6 @@ pub trait VolumeService: Send + Sync {
     fn ephemeral(&self, params: Option<&VolumeEphemeralParams>) -> Result<Volume, ModalError>;
 
     fn delete(&self, name: &str, params: Option<&VolumeDeleteParams>) -> Result<(), ModalError>;
-}
-
-/// Start an ephemeral heartbeat loop that runs until the notify is triggered.
-pub fn start_ephemeral_heartbeat<F>(notify: Arc<tokio::sync::Notify>, heartbeat_fn: F)
-where
-    F: Fn() -> Result<(), ModalError> + Send + 'static,
-{
-    tokio::spawn(async move {
-        loop {
-            tokio::select! {
-                _ = notify.notified() => {
-                    return;
-                }
-                _ = tokio::time::sleep(EPHEMERAL_OBJECT_HEARTBEAT_SLEEP) => {
-                    let _ = heartbeat_fn();
-                }
-            }
-        }
-    });
 }
 
 /// Implementation of VolumeService backed by a gRPC client.

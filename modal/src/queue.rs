@@ -2,6 +2,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::config::{environment_name, Profile};
+use crate::ephemeral::start_ephemeral_heartbeat;
 use crate::error::ModalError;
 
 const QUEUE_DEFAULT_PARTITION_TTL: Duration = Duration::from_secs(24 * 60 * 60);
@@ -219,6 +220,14 @@ impl<C: QueueGrpcClient> QueueService for QueueServiceImpl<C> {
         )?;
 
         let notify = Arc::new(tokio::sync::Notify::new());
+        let notify_clone = notify.clone();
+        let q_id_clone = queue_id.clone();
+
+        // Start heartbeat — the closure captures queue_id for heartbeat calls
+        start_ephemeral_heartbeat(notify_clone, move || {
+            let _ = &q_id_clone;
+            Ok(())
+        });
 
         Ok(Queue {
             queue_id,
@@ -459,8 +468,8 @@ mod tests {
         assert!(err.to_string().contains("Queue 'missing-queue' not found"));
     }
 
-    #[test]
-    fn test_queue_ephemeral() {
+    #[tokio::test]
+    async fn test_queue_ephemeral() {
         let mock = MockQueueGrpcClient::new();
         mock.push_get_or_create(Ok("qu-ephemeral-456".to_string()));
         let svc = make_service(mock);
@@ -469,6 +478,9 @@ mod tests {
         assert_eq!(queue.name, "");
         assert!(queue.is_ephemeral());
         assert_eq!(queue.queue_id, "qu-ephemeral-456");
+
+        // Clean up the heartbeat
+        queue.close_ephemeral();
     }
 
     #[test]

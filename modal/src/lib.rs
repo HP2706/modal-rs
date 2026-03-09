@@ -20,6 +20,7 @@ pub mod proxy;
 pub mod sandbox_filesystem;
 pub mod invocation;
 pub mod interceptors;
+pub mod ephemeral;
 
 #[cfg(test)]
 pub(crate) mod grpc_mock;
