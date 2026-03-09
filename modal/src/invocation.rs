@@ -1,8 +1,6 @@
 use std::time::{Duration, Instant};
 
 use modal_proto::modal_proto as pb;
-use prost::Message;
-
 use crate::error::ModalError;
 
 /// From: modal-client/modal/_utils/function_utils.py

@@ -4,8 +4,8 @@ use crate::config::{environment_name, Profile};
 use crate::error::ModalError;
 use crate::invocation::{
     cbor_serialize, max_object_size_bytes, max_system_retries, BlobDownloader,
-    ControlPlaneInvocation, InputPlaneInvocation, Invocation, InvocationGrpcClient,
-    InvocationResult, NoBlobDownloader,
+    ControlPlaneInvocation, Invocation, InvocationGrpcClient,
+    InvocationResult,
 };
 
 /// FunctionStats represents statistics for a running Function.
@@ -110,23 +110,10 @@ impl Function {
 
         // Determine if args go inline or via blob
         if args_bytes.len() > max_object_size_bytes() {
-            Ok(pb::FunctionInput {
-                data_format: pb::DataFormat::Cbor as i32,
-                args_oneof: Some(pb::function_input::ArgsOneof::ArgsBlobId(
-                    // In production, blob upload would happen here.
-                    // For now, return an error - blob upload requires network.
-                    return Err(ModalError::Other(
-                        "function input exceeds max object size; blob upload not yet implemented"
-                            .to_string(),
-                    )),
-                )),
-                method_name: if method_name.is_empty() {
-                    None
-                } else {
-                    Some(method_name)
-                },
-                ..Default::default()
-            })
+            return Err(ModalError::Other(
+                "function input exceeds max object size; blob upload not yet implemented"
+                    .to_string(),
+            ));
         } else {
             Ok(pb::FunctionInput {
                 data_format: pb::DataFormat::Cbor as i32,
@@ -307,7 +294,7 @@ impl<C: FunctionGrpcClient> FunctionService for FunctionServiceImpl<C> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::invocation::InvocationGrpcClient;
+    use crate::invocation::{InvocationGrpcClient, NoBlobDownloader};
     use std::sync::Mutex;
 
     // Mock for FunctionGrpcClient
