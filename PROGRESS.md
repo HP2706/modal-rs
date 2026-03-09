@@ -1,5 +1,22 @@
 # Modal Rust SDK Progress
 
+## 2026-03-09 — Remove unimplemented!() stubs from test mocks
+
+### What was done
+Replaced 4 `unimplemented!()` stubs in `function.rs` `MockInvocationClient` (F028):
+- `attempt_start()`, `attempt_await()`, `attempt_retry()`, `blob_get()` now use response-queue pattern matching the other mock methods
+- These were the only remaining `unimplemented!()` calls in the entire codebase
+- No production code was affected — these were test-only mock implementations
+
+### Test counts
+- 423 unit tests + 174 integration tests — all passing (unchanged)
+
+### What's next
+- **The Modal Rust SDK is fully feature-complete with zero `unimplemented!()` or `todo!()` stubs.**
+- Only remaining low-priority item: client_test.go equivalent (requires real gRPC connections, not suitable for mock tests)
+
+---
+
 ## 2026-03-09 — Crate-level documentation and compiler warning cleanup
 
 ### What was done

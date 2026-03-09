@@ -259,6 +259,16 @@
       "priority": "low",
       "status": "done",
       "notes": "Added crate-level //! documentation to lib.rs matching doc.go content. Fixed unused import warnings in function.rs and invocation.rs. Fixed unreachable code warning in function.rs create_input. Complete."
+    },
+    {
+      "id": "F028",
+      "name": "Remove unimplemented!() stubs from test mocks",
+      "module": "function",
+      "category": "source",
+      "go_reference": "libmodal/modal-go/function.go",
+      "priority": "low",
+      "status": "done",
+      "notes": "Replaced 4 unimplemented!() stubs in function.rs MockInvocationClient with proper response-queue mock implementations (attempt_start, attempt_await, attempt_retry, blob_get). Complete."
     }
   ]
 }
