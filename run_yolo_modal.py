@@ -32,6 +32,10 @@ base_image = (
     .add_local_file(
         local_path='sandbox_config.json',
         remote_path='/root/sandbox_config.json',
+    ).add_local_file(
+        local_path=os.path.expanduser('~/.modal.toml'),
+        remote_path='/root/.modal.toml',
+        copy=False,
     )
 )
 
@@ -81,6 +85,12 @@ def _create_sandbox(image_id: str | None = None) -> modal.Sandbox:
         image = _load_image()
     else:
         image = modal.Image.from_id(image_id)
+        
+    image = image.add_local_file(
+        local_path=os.path.expanduser('~/.modal.toml'),
+        remote_path='/root/.modal.toml',
+        copy=False,
+    )
         
     return modal.Sandbox.create(
         app=app,
@@ -279,7 +289,7 @@ def setup_repo(image_id: str | None = None):
     sb.terminate()
 
 
-def run_yolo(image_id: str | None = None):
+def run_yolo(n_loops: int = 20, image_id: str | None = None):
     """Pull latest then run the YOLO dev loop."""
     from datetime import datetime
 
@@ -311,7 +321,7 @@ def run_yolo(image_id: str | None = None):
 
     print(f"Run folder: {run_dir}", flush=True)
 
-    loop_n = 20
+    loop_n = n_loops
     for i in range(1, loop_n + 1):
         logfile = f"{run_dir}/agent_{commit}_{i}.jsonl"
         print(f"\n{'='*60}", flush=True)
@@ -369,6 +379,7 @@ def test_logging(image_id: str | None = None):
 def main(
     cmd : str,
     detach : bool = False,
+    n_loops: int = 5,
 ):
     print("detaching:", detach)
     if cmd == "setup_repo":

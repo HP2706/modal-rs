@@ -142,7 +142,7 @@ Internal packages:
 - **Push Changes** make sure to try to push changes, if you run into any unexpected auth issues just continue
 - **Leave the repo better than you found it.** Even if you can't finish a feature, partial progress with good documentation is valuable.
 
-## Creating PROGRESS.md and FEATURES.json (first session only)
+## Creating PROGRESS.md and FEATURES.json
 
 If `PROGRESS.md` does not exist, create it with a header and your first entry.
 
@@ -174,3 +174,6 @@ Use this format:
 Status values: `"todo"`, `"in_progress"`, `"done"`, `"blocked"`.
 Priority: `"high"` = core SDK source files incomplete, `"medium"` = test coverage gaps, `"low"` = examples/polish.
 Category: `"source"` for SDK modules, `"test"` for test coverage, `"example"` for example programs.
+
+# New
+Previous agent did not try to make the client call the modal api. When every feature is implemented you should implement this. Modal credentials will be available in your environment.
