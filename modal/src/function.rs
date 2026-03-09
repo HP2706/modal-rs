@@ -369,6 +369,10 @@ mod tests {
         function_map_responses: Mutex<Vec<Result<pb::FunctionMapResponse, ModalError>>>,
         get_outputs_responses: Mutex<Vec<Result<pb::FunctionGetOutputsResponse, ModalError>>>,
         retry_responses: Mutex<Vec<Result<pb::FunctionRetryInputsResponse, ModalError>>>,
+        attempt_start_responses: Mutex<Vec<Result<pb::AttemptStartResponse, ModalError>>>,
+        attempt_await_responses: Mutex<Vec<Result<pb::AttemptAwaitResponse, ModalError>>>,
+        attempt_retry_responses: Mutex<Vec<Result<pb::AttemptRetryResponse, ModalError>>>,
+        blob_get_responses: Mutex<Vec<Result<pb::BlobGetResponse, ModalError>>>,
     }
 
     impl MockInvocationClient {
@@ -377,6 +381,10 @@ mod tests {
                 function_map_responses: Mutex::new(Vec::new()),
                 get_outputs_responses: Mutex::new(Vec::new()),
                 retry_responses: Mutex::new(Vec::new()),
+                attempt_start_responses: Mutex::new(Vec::new()),
+                attempt_await_responses: Mutex::new(Vec::new()),
+                attempt_retry_responses: Mutex::new(Vec::new()),
+                blob_get_responses: Mutex::new(Vec::new()),
             }
         }
 
@@ -429,7 +437,7 @@ mod tests {
             _function_id: &str,
             _input: pb::FunctionPutInputsItem,
         ) -> Result<pb::AttemptStartResponse, ModalError> {
-            unimplemented!()
+            self.attempt_start_responses.lock().unwrap().remove(0)
         }
 
         fn attempt_await(
@@ -438,7 +446,7 @@ mod tests {
             _requested_at: f64,
             _timeout_secs: f32,
         ) -> Result<pb::AttemptAwaitResponse, ModalError> {
-            unimplemented!()
+            self.attempt_await_responses.lock().unwrap().remove(0)
         }
 
         fn attempt_retry(
@@ -447,11 +455,11 @@ mod tests {
             _input: pb::FunctionPutInputsItem,
             _attempt_token: &str,
         ) -> Result<pb::AttemptRetryResponse, ModalError> {
-            unimplemented!()
+            self.attempt_retry_responses.lock().unwrap().remove(0)
         }
 
         fn blob_get(&self, _blob_id: &str) -> Result<pb::BlobGetResponse, ModalError> {
-            unimplemented!()
+            self.blob_get_responses.lock().unwrap().remove(0)
         }
     }
 
