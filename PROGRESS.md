@@ -1,5 +1,32 @@
 # Modal Rust SDK Progress
 
+## 2026-03-09 — SandboxFilesystem module implementation
+
+### What was done
+Implemented the SandboxFilesystem module (`modal/src/sandbox_filesystem.rs`) with:
+- **FileMode** parser/validator for Unix-style file mode strings (r, w, a, x, b, +)
+- **FileIO** handle with read/write/seek/flush/close operations, size limit validation, chunked writes
+- **SandboxFilesystemService** trait with open, read, readline, write, flush, seek, close, ls, mkdir, rm
+- **SandboxFilesystemGrpcClient** abstraction trait for testability
+- **SystemErrorCode** mapping from proto errno values to ModalError types
+- **FileWatchEvent** and **FileWatchEventType** for filesystem change notifications
+- **DirListing** JSON parsing for ls output
+- 50 unit tests covering all operations and edge cases
+
+### Test counts
+- Before: 131 unit tests
+- After: 181 unit tests (50 new)
+- All passing
+
+### What's next (priority order)
+1. **Invocation** (`invocation.rs`, 6 lines) — Critical foundation for Function execution. Needs control-plane and input-plane implementations, output polling, blob download, result deserialization.
+2. **Function** (`function.rs`, 10 lines) — Primary user API. Needs Remote(), Spawn(), GetCurrentStats(), serialization, invocation routing.
+3. **Image.Build()** — Streaming gRPC build orchestration (structural types done, build method not yet implemented).
+4. **Queue Put/Get/Iterate** — Need pickle serialization infrastructure.
+5. **Integration tests** — All 17 test files in `modal/tests/` are empty.
+
+---
+
 ## 2026-03-09 — Batch module implementations (Volume, Proxy, FunctionCall, Image, Queue)
 
 ### What was done
