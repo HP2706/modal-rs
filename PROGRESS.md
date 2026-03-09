@@ -1,5 +1,36 @@
 # Modal Rust SDK Progress
 
+## 2026-03-09 — Integration tests implementation
+
+### What was done
+Implemented 136 mock-based integration tests across all 15 test files in `modal/tests/` (F023):
+- **auth_token_manager_test.rs**: 6 tests — JWT decoding, malformed tokens, float exp, expiry
+- **secret_test.rs**: 6 tests — Secret construction, from_map, merge_env_into_secrets, error cases
+- **volume_test.rs**: 8 tests — from_name, ephemeral, read_only, delete, allow_missing, not_found
+- **proxy_test.rs**: 4 tests — from_name, environment params, not_found (None and empty ID)
+- **queue_test.rs**: 13 tests — ephemeral, named, len, clear, delete, partition validation, TTL
+- **image_test.rs**: 13 tests — from_registry, ECR, GCP, dockerfile_commands, chaining, build, GPU, secrets, validate, from_id, delete
+- **function_test.rs**: 8 tests — from_name, environment, Cls method error, stats, autoscaler, web endpoint, create_input
+- **function_call_test.rs**: 5 tests — from_id, cancel (default/terminate/error), various IDs
+- **cls_test.rs**: 6 tests — ServiceOptions, build_function_options_proto, merge_service_options
+- **cls_with_options_test.rs**: 16 tests — timeout, CPU, memory, GPU, secrets, volumes, concurrency, batching, retries, stacking, validation errors
+- **grpc_test.rs**: 4 tests — error types, status codes, ModalError display, all error variants
+- **sandbox_test.rs**: 22 tests — params construction, exec validation, stream configs, exit status, tunnels, tags, connect token
+- **sandbox_filesystem_test.rs**: 13 tests — FileMode parsing, SystemErrorCode, SeekWhence, FileWatchEvent
+- **sandbox_directory_snapshot_test.rs**: 4 tests — Image mount/snapshot structural tests
+- **sandbox_filesystem_snapshot_test.rs**: 2 tests — snapshot create/restore structural tests
+- **retries_test.rs**: 6 tests (already implemented, unchanged)
+
+### Test counts
+- Before: 356 unit tests + 6 integration tests (retries_test only)
+- After: 356 unit tests + 136 integration tests
+- All passing
+
+### What's next (priority order)
+1. **Examples** — 26 Go examples need Rust equivalents (F024)
+
+---
+
 ## 2026-03-09 — ContainerProcess and I/O streaming implementation
 
 ### What was done

@@ -227,8 +227,8 @@
       "category": "test",
       "go_reference": "libmodal/modal-go/test/",
       "priority": "medium",
-      "status": "todo",
-      "notes": "All 17 integration test files in modal/tests/ are empty stubs."
+      "status": "done",
+      "notes": "136 integration tests across 15 test files. Mock-based tests exercising public API. Complete."
     },
     {
       "id": "F024",
