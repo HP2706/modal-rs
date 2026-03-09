@@ -1,5 +1,31 @@
 # Modal Rust SDK Progress
 
+## 2026-03-09 — Function module implementation
+
+### What was done
+Implemented the Function module (`modal/src/function.rs`) with:
+- **FunctionService** trait and **FunctionServiceImpl** with `from_name` (Cls method detection, environment parameter)
+- **Function** struct with handle_metadata, `create_input` (CBOR encoding), web URL validation
+- **Remote**: execute function with automatic retry on InternalFailure (up to 8 retries)
+- **Spawn**: start function execution asynchronously, returns function call ID
+- **GetCurrentStats**: retrieve backlog and runner count
+- **UpdateAutoscaler**: override min/max/buffer containers and scaledown window
+- **FunctionGrpcClient** trait for testability
+- 29 unit tests covering all operations and edge cases
+
+### Test counts
+- Before: 229 unit tests
+- After: 258 unit tests (29 new)
+- All passing
+
+### What's next (priority order)
+1. **Image.Build()** — Streaming gRPC build orchestration (structural types done, build method not yet implemented).
+2. **Queue Put/Get/Iterate** — Need pickle serialization infrastructure.
+3. **Integration tests** — All 17 test files in `modal/tests/` are empty.
+4. **Examples** — 26 Go examples need Rust equivalents.
+
+---
+
 ## 2026-03-09 — Invocation module implementation
 
 ### What was done
