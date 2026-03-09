@@ -1,5 +1,32 @@
 # Modal Rust SDK Progress
 
+## 2026-03-09 — Image.Build() layer-by-layer implementation
+
+### What was done
+Refactored the Image module (`modal/src/image.rs`) to implement proper layer-by-layer Build() matching the Go SDK:
+- **Layer-by-layer build orchestration**: iterates through layers sequentially, each getting its own `ImageGetOrCreate` RPC
+- **FROM tag construction**: first layer uses `FROM <tag>`, subsequent layers use `FROM base` with `BaseImage` linking to previous built image ID
+- **Streaming polling**: `ImageJoinStreaming` with resumable `last_entry_id` for builds in progress
+- **New types**: `ImageLayerBuildRequest`, `BaseImage`, `ImageJoinStreamingResult`, `ImageBuildStatus::Timeout/Terminated`
+- **Pre-build validation**: validates all layers' dockerfile commands before making any RPCs
+- **GPU config, secrets, force_build** propagation per-layer
+- **build() returns full Image** (not just ID) preserving metadata (tag, registry config, layers)
+- **Request recording** in mock for assertion of exact request parameters per layer
+- 37 new image tests (295 total), including multi-layer orchestration test matching Go's `TestDockerfileCommandsWithOptions`
+
+### Test counts
+- Before: 258 unit tests
+- After: 295 unit tests (37 new)
+- All passing
+
+### What's next (priority order)
+1. **Sandbox module completion** — Missing FromID, FromName, List, Exec details, Wait, Tunnels, ContainerProcess, I/O streaming
+2. **Queue Put/Get/Iterate** — Need pickle serialization infrastructure
+3. **Integration tests** — All 17 test files in `modal/tests/` are empty
+4. **Examples** — 26 Go examples need Rust equivalents
+
+---
+
 ## 2026-03-09 — Function module implementation
 
 ### What was done

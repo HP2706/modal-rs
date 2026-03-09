@@ -1,0 +1,244 @@
+{
+  "features": [
+    {
+      "id": "F001",
+      "name": "App module",
+      "module": "app",
+      "category": "source",
+      "go_reference": "libmodal/modal-go/app.go",
+      "priority": "high",
+      "status": "done",
+      "notes": "GPU config parsing, App struct. Complete."
+    },
+    {
+      "id": "F002",
+      "name": "Auth token manager",
+      "module": "auth_token_manager",
+      "category": "source",
+      "go_reference": "libmodal/modal-go/auth_token_manager.go",
+      "priority": "high",
+      "status": "done",
+      "notes": "Token management and caching. Complete."
+    },
+    {
+      "id": "F003",
+      "name": "Client module",
+      "module": "client",
+      "category": "source",
+      "go_reference": "libmodal/modal-go/client.go",
+      "priority": "high",
+      "status": "done",
+      "notes": "gRPC client wrapper. Complete."
+    },
+    {
+      "id": "F004",
+      "name": "Cloud bucket mount",
+      "module": "cloud_bucket_mount",
+      "category": "source",
+      "go_reference": "libmodal/modal-go/cloud_bucket_mount.go",
+      "priority": "high",
+      "status": "done",
+      "notes": "Mount params and builder patterns. Complete."
+    },
+    {
+      "id": "F005",
+      "name": "Cls module",
+      "module": "cls",
+      "category": "source",
+      "go_reference": "libmodal/modal-go/cls.go",
+      "priority": "high",
+      "status": "done",
+      "notes": "Class/Callable support with batching. Complete."
+    },
+    {
+      "id": "F006",
+      "name": "Config module",
+      "module": "config",
+      "category": "source",
+      "go_reference": "libmodal/modal-go/config.go",
+      "priority": "high",
+      "status": "done",
+      "notes": "Profile parsing and config management. Complete."
+    },
+    {
+      "id": "F007",
+      "name": "Error types",
+      "module": "error",
+      "category": "source",
+      "go_reference": "libmodal/modal-go/errors.go",
+      "priority": "high",
+      "status": "done",
+      "notes": "Error enum with thiserror. Complete."
+    },
+    {
+      "id": "F008",
+      "name": "Ephemeral module",
+      "module": "ephemeral",
+      "category": "source",
+      "go_reference": "libmodal/modal-go/ephemeral.go",
+      "priority": "medium",
+      "status": "todo",
+      "notes": "Heartbeat/ephemeral object support. No Rust equivalent yet."
+    },
+    {
+      "id": "F009",
+      "name": "Function module",
+      "module": "function",
+      "category": "source",
+      "go_reference": "libmodal/modal-go/function.go",
+      "priority": "high",
+      "status": "done",
+      "notes": "FromName, Remote, Spawn, stats, autoscaler. 4 input-plane stubs remain (attempt_start/await/retry, blob_get)."
+    },
+    {
+      "id": "F010",
+      "name": "Function call module",
+      "module": "function_call",
+      "category": "source",
+      "go_reference": "libmodal/modal-go/function_call.go",
+      "priority": "high",
+      "status": "done",
+      "notes": "Call result retrieval and cancel. Complete."
+    },
+    {
+      "id": "F011",
+      "name": "Image module with Build()",
+      "module": "image",
+      "category": "source",
+      "go_reference": "libmodal/modal-go/image.go",
+      "priority": "high",
+      "status": "done",
+      "notes": "Layer-by-layer build orchestration, streaming polling, registry support, delete. Complete."
+    },
+    {
+      "id": "F012",
+      "name": "Invocation module",
+      "module": "invocation",
+      "category": "source",
+      "go_reference": "libmodal/modal-go/invocation.go",
+      "priority": "high",
+      "status": "done",
+      "notes": "Control-plane and input-plane invocation, CBOR serialization. Complete."
+    },
+    {
+      "id": "F013",
+      "name": "Logger module",
+      "module": "logger",
+      "category": "source",
+      "go_reference": "libmodal/modal-go/logger.go",
+      "priority": "high",
+      "status": "done",
+      "notes": "slog-based logging. Complete."
+    },
+    {
+      "id": "F014",
+      "name": "Proxy module",
+      "module": "proxy",
+      "category": "source",
+      "go_reference": "libmodal/modal-go/proxy.go",
+      "priority": "high",
+      "status": "done",
+      "notes": "Proxy from name. Complete."
+    },
+    {
+      "id": "F015",
+      "name": "Queue module",
+      "module": "queue",
+      "category": "source",
+      "go_reference": "libmodal/modal-go/queue.go",
+      "priority": "high",
+      "status": "done",
+      "notes": "Queue operations with partitions. Complete."
+    },
+    {
+      "id": "F016",
+      "name": "Retries module",
+      "module": "retries",
+      "category": "source",
+      "go_reference": "libmodal/modal-go/retries.go",
+      "priority": "high",
+      "status": "done",
+      "notes": "Exponential backoff retry logic. Complete."
+    },
+    {
+      "id": "F017",
+      "name": "Sandbox module",
+      "module": "sandbox",
+      "category": "source",
+      "go_reference": "libmodal/modal-go/sandbox.go",
+      "priority": "high",
+      "status": "in_progress",
+      "notes": "Create/exec/wait/terminate done. Missing: FromID, FromName, List, ContainerProcess, I/O streaming, Tunnels, filesystem ops, tags."
+    },
+    {
+      "id": "F018",
+      "name": "Sandbox filesystem module",
+      "module": "sandbox_filesystem",
+      "category": "source",
+      "go_reference": "libmodal/modal-go/sandbox_filesystem.go",
+      "priority": "high",
+      "status": "done",
+      "notes": "File I/O operations, dir listing, file watch. Complete."
+    },
+    {
+      "id": "F019",
+      "name": "Secret module",
+      "module": "secret",
+      "category": "source",
+      "go_reference": "libmodal/modal-go/secret.go",
+      "priority": "high",
+      "status": "done",
+      "notes": "Secret creation and management. Complete."
+    },
+    {
+      "id": "F020",
+      "name": "Serialization module",
+      "module": "serialization",
+      "category": "source",
+      "go_reference": "libmodal/modal-go/serialization_test.go",
+      "priority": "high",
+      "status": "done",
+      "notes": "CBOR/JSON serialization. Complete."
+    },
+    {
+      "id": "F021",
+      "name": "Task command router",
+      "module": "task_command_router",
+      "category": "source",
+      "go_reference": "libmodal/modal-go/task_command_router_client.go",
+      "priority": "high",
+      "status": "done",
+      "notes": "gRPC routing client. Complete."
+    },
+    {
+      "id": "F022",
+      "name": "Volume module",
+      "module": "volume",
+      "category": "source",
+      "go_reference": "libmodal/modal-go/volume.go",
+      "priority": "high",
+      "status": "done",
+      "notes": "Volume operations with ephemeral heartbeat. Complete."
+    },
+    {
+      "id": "F023",
+      "name": "Integration tests",
+      "module": "tests",
+      "category": "test",
+      "go_reference": "libmodal/modal-go/test/",
+      "priority": "medium",
+      "status": "todo",
+      "notes": "All 17 integration test files in modal/tests/ are empty stubs."
+    },
+    {
+      "id": "F024",
+      "name": "Rust examples",
+      "module": "examples",
+      "category": "example",
+      "go_reference": "libmodal/modal-go/examples/",
+      "priority": "low",
+      "status": "todo",
+      "notes": "26 Go examples need Rust equivalents. No examples directory exists yet."
+    }
+  ]
+}
