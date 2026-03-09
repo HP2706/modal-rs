@@ -138,7 +138,8 @@ Internal packages:
 - **Protect your context window.** Always `| tail -N` on cargo commands. Log verbose output to files if needed (`cargo test 2>&1 > /tmp/test_output.log`), then read specific sections. Never dump more than ~30 lines of build/test output raw.
 - **If you're stuck**, document what you tried in `PROGRESS.md`, mark the feature as `"blocked"` with details in `FEATURES.json`, and exit cleanly. The next agent or a human will pick it up. Do not spin in circles.
 - **You cannot make network calls to Modal's API.** All tests must use mocks (see `modal/src/grpc_mock.rs`).
-- **Commit frequently.** Small, atomic commits are better than one giant commit at the end.
+- **Commit frequently.** Small, atomic commits are better than one giant commit at the end. 
+- **Push Changes** make sure to try to push changes, if you run into any unexpected auth issues just continue
 - **Leave the repo better than you found it.** Even if you can't finish a feature, partial progress with good documentation is valuable.
 
 ## Creating PROGRESS.md and FEATURES.json (first session only)

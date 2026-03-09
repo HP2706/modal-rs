@@ -150,7 +150,17 @@ def _run_claude(sb: modal.Sandbox, prompt: str, logfile: str, max_turns: int | N
     # Strip escape codes, extract JSON lines, print + write each immediately.
     ansi_re = re.compile(r'\x1b[\[\]()][0-9;?]*[a-zA-Z\x07]|\r')
     line_buf = ""
-    for chunk in proc.stdout:
+    stdout_iter = iter(proc.stdout)
+    while True:
+        try:
+            chunk = next(stdout_iter)
+        except StopIteration:
+            break
+        except UnicodeDecodeError:
+            # Modal splits raw bytes at arbitrary boundaries which can
+            # bisect multi-byte UTF-8 chars (e.g. 0xe2 for '…').
+            # Skip the malformed chunk — at worst we lose one character.
+            continue
         clean = ansi_re.sub('', chunk)
         line_buf += clean
         while '\n' in line_buf:
@@ -230,7 +240,18 @@ def setup_auth():
     print("Now run: python run_yolo_modal.py")
 
     sb.terminate()
-
+    
+    
+@app.function(
+    cpu=1,
+    memory=4096,
+    timeout=60*60*24,
+    image=base_image,
+    secrets=[github_secret],
+    volumes={REPO_DIR: repo_vol},
+)
+def shell():
+    pass
 
 # --- Main entrypoints (all sandbox-based) ---
 
