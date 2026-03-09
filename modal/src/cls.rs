@@ -1,9 +1,101 @@
 use std::time::Duration;
 
+use modal_proto::modal_proto as pb;
+
+use crate::config::{environment_name, Profile};
 use crate::error::ModalError;
 use crate::retries::Retries;
 use crate::secret::Secret;
 use crate::volume::Volume;
+
+/// Cls represents a Modal class definition that can be instantiated with parameters.
+#[derive(Debug, Clone)]
+pub struct Cls {
+    pub service_function_id: String,
+    pub service_function_metadata: Option<pb::FunctionHandleMetadata>,
+    pub service_options: Option<ServiceOptions>,
+}
+
+/// ClsFromNameParams are options for client.Cls.FromName.
+#[derive(Debug, Clone, Default)]
+pub struct ClsFromNameParams {
+    pub environment: String,
+    pub create_if_missing: bool,
+}
+
+/// ClsService provides Cls related operations.
+pub trait ClsService: Send + Sync {
+    fn from_name(
+        &self,
+        app_name: &str,
+        name: &str,
+        params: Option<&ClsFromNameParams>,
+    ) -> Result<Cls, ModalError>;
+}
+
+/// Trait abstracting the gRPC calls needed by ClsServiceImpl.
+pub trait ClsGrpcClient: Send + Sync {
+    /// Calls FunctionGet and returns (function_id, handle_metadata).
+    fn function_get(
+        &self,
+        app_name: &str,
+        object_tag: &str,
+        environment_name: &str,
+    ) -> Result<(String, Option<pb::FunctionHandleMetadata>), ModalError>;
+}
+
+/// Implementation of ClsService backed by a gRPC client.
+pub struct ClsServiceImpl<C: ClsGrpcClient> {
+    pub client: C,
+    pub profile: Profile,
+}
+
+impl<C: ClsGrpcClient> ClsService for ClsServiceImpl<C> {
+    fn from_name(
+        &self,
+        app_name: &str,
+        name: &str,
+        params: Option<&ClsFromNameParams>,
+    ) -> Result<Cls, ModalError> {
+        let default_params = ClsFromNameParams::default();
+        let params = params.unwrap_or(&default_params);
+
+        let service_function_name = format!("{}.*", name);
+        let env = environment_name(&params.environment, &self.profile);
+
+        let (function_id, metadata) = self
+            .client
+            .function_get(app_name, &service_function_name, &env)
+            .map_err(|e| {
+                if matches!(&e, ModalError::Grpc(s) if s.code() == tonic::Code::NotFound) {
+                    ModalError::NotFound(format!("class '{}/{}' not found", app_name, name))
+                } else {
+                    e
+                }
+            })?;
+
+        // Validate parameter serialization format
+        if let Some(ref m) = metadata {
+            if let Some(ref param_info) = m.class_parameter_info {
+                if !param_info.schema.is_empty()
+                    && param_info.format
+                        != pb::class_parameter_info::ParameterSerializationFormat::ParamSerializationFormatProto as i32
+                {
+                    return Err(ModalError::Invalid(format!(
+                        "unsupported parameter format: {}",
+                        param_info.format
+                    )));
+                }
+            }
+        }
+
+        Ok(Cls {
+            service_function_id: function_id,
+            service_function_metadata: metadata,
+            service_options: None,
+        })
+    }
+}
 
 /// ServiceOptions holds runtime configuration for a Modal class.
 #[derive(Debug, Clone, Default)]
@@ -183,6 +275,65 @@ pub fn merge_service_options(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct MockClsGrpcClient {
+        result: Result<(String, Option<pb::FunctionHandleMetadata>), ModalError>,
+    }
+
+    impl ClsGrpcClient for MockClsGrpcClient {
+        fn function_get(
+            &self,
+            _app_name: &str,
+            _object_tag: &str,
+            _environment_name: &str,
+        ) -> Result<(String, Option<pb::FunctionHandleMetadata>), ModalError> {
+            match &self.result {
+                Ok(v) => Ok(v.clone()),
+                Err(e) => Err(ModalError::Other(e.to_string())),
+            }
+        }
+    }
+
+    fn make_cls_service(mock: MockClsGrpcClient) -> ClsServiceImpl<MockClsGrpcClient> {
+        ClsServiceImpl {
+            client: mock,
+            profile: Profile::default(),
+        }
+    }
+
+    #[test]
+    fn test_cls_from_name_success() {
+        let metadata = pb::FunctionHandleMetadata::default();
+        let svc = make_cls_service(MockClsGrpcClient {
+            result: Ok(("fn-123".to_string(), Some(metadata))),
+        });
+        let cls = svc.from_name("my-app", "MyClass", None).unwrap();
+        assert_eq!(cls.service_function_id, "fn-123");
+        assert!(cls.service_function_metadata.is_some());
+    }
+
+    #[test]
+    fn test_cls_from_name_not_found() {
+        let svc = make_cls_service(MockClsGrpcClient {
+            result: Err(ModalError::Other("not found".to_string())),
+        });
+        let err = svc.from_name("my-app", "MyClass", None).unwrap_err();
+        assert!(err.to_string().contains("not found"), "got: {}", err);
+    }
+
+    #[test]
+    fn test_cls_from_name_with_params() {
+        let metadata = pb::FunctionHandleMetadata::default();
+        let svc = make_cls_service(MockClsGrpcClient {
+            result: Ok(("fn-456".to_string(), Some(metadata))),
+        });
+        let params = ClsFromNameParams {
+            environment: "staging".to_string(),
+            create_if_missing: false,
+        };
+        let cls = svc.from_name("my-app", "MyClass", Some(&params)).unwrap();
+        assert_eq!(cls.service_function_id, "fn-456");
+    }
 
     #[test]
     fn test_build_function_options_proto_nil() {

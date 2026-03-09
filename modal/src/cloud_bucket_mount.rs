@@ -1,6 +1,28 @@
 use crate::error::ModalError;
 use crate::secret::Secret;
 
+/// CloudBucketMountService provides CloudBucketMount related operations.
+pub trait CloudBucketMountService: Send + Sync {
+    fn new_mount(
+        &self,
+        bucket_name: &str,
+        params: Option<&CloudBucketMountParams>,
+    ) -> Result<CloudBucketMount, ModalError>;
+}
+
+/// Default implementation of CloudBucketMountService.
+pub struct CloudBucketMountServiceImpl;
+
+impl CloudBucketMountService for CloudBucketMountServiceImpl {
+    fn new_mount(
+        &self,
+        bucket_name: &str,
+        params: Option<&CloudBucketMountParams>,
+    ) -> Result<CloudBucketMount, ModalError> {
+        new_cloud_bucket_mount(bucket_name, params)
+    }
+}
+
 /// Bucket type for cloud storage.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BucketType {

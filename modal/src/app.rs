@@ -1,3 +1,4 @@
+use crate::config::{environment_name, Profile};
 use crate::error::ModalError;
 
 /// App references a deployed Modal App.
@@ -5,6 +6,68 @@ use crate::error::ModalError;
 pub struct App {
     pub app_id: String,
     pub name: String,
+}
+
+/// AppFromNameParams are options for client.Apps.FromName.
+#[derive(Debug, Clone, Default)]
+pub struct AppFromNameParams {
+    pub environment: String,
+    pub create_if_missing: bool,
+}
+
+/// AppService provides App related operations.
+pub trait AppService: Send + Sync {
+    fn from_name(
+        &self,
+        name: &str,
+        params: Option<&AppFromNameParams>,
+    ) -> Result<App, ModalError>;
+}
+
+/// Trait abstracting the gRPC calls needed by AppServiceImpl.
+pub trait AppGrpcClient: Send + Sync {
+    fn app_get_or_create(
+        &self,
+        app_name: &str,
+        environment_name: &str,
+        object_creation_type: i32,
+    ) -> Result<String, ModalError>;
+}
+
+/// Implementation of AppService backed by a gRPC client.
+pub struct AppServiceImpl<C: AppGrpcClient> {
+    pub client: C,
+    pub profile: Profile,
+}
+
+impl<C: AppGrpcClient> AppService for AppServiceImpl<C> {
+    fn from_name(
+        &self,
+        name: &str,
+        params: Option<&AppFromNameParams>,
+    ) -> Result<App, ModalError> {
+        let default_params = AppFromNameParams::default();
+        let params = params.unwrap_or(&default_params);
+
+        let creation_type = if params.create_if_missing { 2 } else { 0 };
+        let env = environment_name(&params.environment, &self.profile);
+
+        let app_id = self
+            .client
+            .app_get_or_create(name, &env, creation_type)
+            .map_err(|e| {
+                if matches!(&e, ModalError::Grpc(s) if s.code() == tonic::Code::NotFound) {
+                    ModalError::NotFound(format!("App '{}' not found", name))
+                } else {
+                    e
+                }
+            })?;
+
+        Ok(App {
+            app_id,
+            name: name.to_string(),
+        })
+    }
 }
 
 /// GPUConfig parsed from a GPU string.
@@ -51,6 +114,63 @@ pub fn parse_gpu_config(gpu: &str) -> Result<GpuConfig, ModalError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct MockAppGrpcClient {
+        result: Result<String, ModalError>,
+    }
+
+    impl AppGrpcClient for MockAppGrpcClient {
+        fn app_get_or_create(
+            &self,
+            _app_name: &str,
+            _environment_name: &str,
+            _object_creation_type: i32,
+        ) -> Result<String, ModalError> {
+            match &self.result {
+                Ok(v) => Ok(v.clone()),
+                Err(e) => Err(ModalError::Other(e.to_string())),
+            }
+        }
+    }
+
+    fn make_service(mock: MockAppGrpcClient) -> AppServiceImpl<MockAppGrpcClient> {
+        AppServiceImpl {
+            client: mock,
+            profile: Profile::default(),
+        }
+    }
+
+    #[test]
+    fn test_app_from_name_success() {
+        let svc = make_service(MockAppGrpcClient {
+            result: Ok("ap-test-123".to_string()),
+        });
+        let app = svc.from_name("my-app", None).unwrap();
+        assert_eq!(app.app_id, "ap-test-123");
+        assert_eq!(app.name, "my-app");
+    }
+
+    #[test]
+    fn test_app_from_name_with_params() {
+        let svc = make_service(MockAppGrpcClient {
+            result: Ok("ap-test-456".to_string()),
+        });
+        let params = AppFromNameParams {
+            environment: "staging".to_string(),
+            create_if_missing: true,
+        };
+        let app = svc.from_name("my-app", Some(&params)).unwrap();
+        assert_eq!(app.app_id, "ap-test-456");
+    }
+
+    #[test]
+    fn test_app_from_name_error() {
+        let svc = make_service(MockAppGrpcClient {
+            result: Err(ModalError::Other("connection failed".to_string())),
+        });
+        let err = svc.from_name("my-app", None).unwrap_err();
+        assert!(err.to_string().contains("connection failed"), "got: {}", err);
+    }
 
     #[test]
     fn test_parse_gpu_config() {
