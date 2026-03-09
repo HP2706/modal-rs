@@ -228,7 +228,7 @@
       "go_reference": "libmodal/modal-go/test/",
       "priority": "medium",
       "status": "done",
-      "notes": "136 integration tests across 15 test files. Mock-based tests exercising public API. Complete."
+      "notes": "174 integration tests across 21 test files. Mock-based tests exercising public API. Complete."
     },
     {
       "id": "F024",
@@ -239,6 +239,16 @@
       "priority": "low",
       "status": "done",
       "notes": "26 Rust examples in modal/examples/ mirroring all Go examples. All compile successfully. Complete."
+    },
+    {
+      "id": "F026",
+      "name": "Missing Go test file equivalents",
+      "module": "tests",
+      "category": "test",
+      "go_reference": "libmodal/modal-go/*_test.go",
+      "priority": "medium",
+      "status": "done",
+      "notes": "38 new integration tests across 6 files: app_test, config_test, logger_test, cloud_bucket_mount_test, serialization_test, task_command_router_test. Also fixed queue_test mock. Complete."
     }
   ]
 }

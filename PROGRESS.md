@@ -1,5 +1,34 @@
 # Modal Rust SDK Progress
 
+## 2026-03-09 — Missing Go test file integration tests
+
+### What was done
+Added 38 integration tests across 6 new test files, covering all Go test files that previously had no Rust integration test equivalents:
+
+1. **app_test.rs** (8 tests): GPU config parsing — empty, single types, counts, case-insensitive, error cases (invalid/empty/zero/negative count)
+2. **config_test.rs** (4 tests): Profile.is_localhost() for localhost, non-localhost, IPv4, empty URL
+3. **logger_test.rs** (2 tests): parse_log_level() valid values (DEBUG/INFO/WARN/WARNING/ERROR/case-insensitive/empty) and invalid value
+4. **cloud_bucket_mount_test.rs** (8 tests): Creation with minimal/all options, bucket type detection (S3/R2/GCP/unknown), validation (invalid URL, requester pays without secret, key prefix without trailing slash), proto conversion
+5. **serialization_test.rs** (1 test): Parameter set encoding determinism and byte-level compatibility with Python SDK, defaults
+6. **task_command_router_test.rs** (15 tests): JWT expiration parsing (valid/no-exp/malformed/invalid-base64/non-numeric), transient error retries (5 codes, non-retryable, max retries, deadline, closed client), auth retry (success/unauthenticated/non-auth/still-auth-after-retry)
+
+Also fixed pre-existing compilation error in queue_test.rs where the mock was missing 3 newly added QueueGrpcClient trait methods (queue_get, queue_put, queue_next_items).
+
+### Test counts
+- Before: 423 unit tests + 136 integration tests
+- After: 423 unit tests + 174 integration tests (38 new)
+- All passing
+
+### What's next
+- All Go source files have Rust equivalents (F001-F022, F025 done)
+- All Go test files now have integration test coverage (F023, F026 done)
+- All Go examples have Rust equivalents (F024 done)
+- Remaining low-priority items:
+  - Crate-level documentation (doc.go equivalent) in lib.rs
+  - client_test.go equivalent (requires real gRPC connections, not suitable for mock tests)
+
+---
+
 ## 2026-03-09 — Queue Get/Put/Iterate with pickle serialization
 
 ### What was done
