@@ -98,6 +98,36 @@ impl QueueGrpcClient for MockQueueClient {
             _ => panic!("unexpected mock response type"),
         }
     }
+
+    fn queue_get(
+        &self,
+        _queue_id: &str,
+        _partition_key: Option<&[u8]>,
+        _timeout: f32,
+        _n_values: i32,
+    ) -> Result<Vec<Vec<u8>>, ModalError> {
+        unimplemented!()
+    }
+
+    fn queue_put(
+        &self,
+        _queue_id: &str,
+        _values: Vec<Vec<u8>>,
+        _partition_key: Option<&[u8]>,
+        _partition_ttl_seconds: i32,
+    ) -> Result<(), ModalError> {
+        unimplemented!()
+    }
+
+    fn queue_next_items(
+        &self,
+        _queue_id: &str,
+        _partition_key: Option<&[u8]>,
+        _item_poll_timeout: f32,
+        _last_entry_id: &str,
+    ) -> Result<Vec<(String, Vec<u8>)>, ModalError> {
+        unimplemented!()
+    }
 }
 
 fn make_service(mock: MockQueueClient) -> QueueServiceImpl<MockQueueClient> {
