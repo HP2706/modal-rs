@@ -148,7 +148,7 @@
       "go_reference": "libmodal/modal-go/queue.go",
       "priority": "high",
       "status": "done",
-      "notes": "Queue operations with partitions. Complete."
+      "notes": "Queue operations with partitions, Get/GetMany/Put/PutMany/Iterate with pickle serialization. Complete."
     },
     {
       "id": "F016",

@@ -1,5 +1,36 @@
 # Modal Rust SDK Progress
 
+## 2026-03-09 — Queue Get/Put/Iterate with pickle serialization
+
+### What was done
+Implemented Queue data manipulation methods and a minimal pickle serialization module:
+
+1. **Pickle module** (`modal/src/pickle.rs`):
+   - `PickleValue` enum: None, Bool, Int, Float, String, Bytes, List, Tuple, Dict
+   - `pickle_serialize()`: Protocol 2 encoder supporting all value types
+   - `pickle_deserialize()`: Protocol 0-5 decoder with stack-based opcode interpreter
+   - `From` trait implementations for ergonomic value construction
+   - Handles memoization, frames, all integer encodings (BININT1/2, BININT, LONG1)
+
+2. **Queue methods** (`modal/src/queue.rs`):
+   - `get()`: Remove and return one item (blocking by default, timeout-based QueueEmpty)
+   - `get_many()`: Remove up to n items
+   - `put()`: Add one item with exponential backoff on ResourceExhausted (QueueFull)
+   - `put_many()`: Add multiple items
+   - `iterate()`: Yield items until idle (poll-based with configurable timeout)
+   - Extended `QueueGrpcClient` trait with `queue_get`, `queue_put`, `queue_next_items`
+
+### Test counts
+- Before: 382 unit tests + 136 integration tests
+- After: 423 unit tests + 136 integration tests (41 new: 22 pickle + 19 queue)
+- All passing
+
+### What's next
+- All core features complete. Remaining low-priority items:
+  - Package documentation (doc.go equivalent)
+
+---
+
 ## 2026-03-09 — TaskCommandRouterClient implementation
 
 ### What was done
