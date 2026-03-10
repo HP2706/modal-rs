@@ -95,7 +95,9 @@ impl ModalGrpcTransport {
             .initial_connection_window_size(64 * 1024 * 1024);
 
         let endpoint = if is_tls {
-            let tls_config = ClientTlsConfig::new();
+            let tls_config = ClientTlsConfig::new()
+                .with_native_roots()
+                .with_webpki_roots();
             endpoint
                 .tls_config(tls_config)
                 .map_err(|e| ModalError::Config(format!("TLS configuration error: {}", e)))?
@@ -1758,10 +1760,9 @@ mod tests {
             server_url: String::new(),
             ..Profile::default()
         };
-        // This will fail to connect but should parse the URL correctly
+        // Empty URL defaults to api.modal.com — should connect successfully with TLS
         let result = ModalGrpcTransport::create_channel(&profile).await;
-        // Connection will fail (no server), but we verify URL parsing doesn't panic
-        assert!(result.is_err());
+        assert!(result.is_ok(), "expected connection to default URL to succeed, got: {:?}", result.err());
     }
 
     #[tokio::test]
