@@ -299,6 +299,16 @@
       "priority": "medium",
       "status": "done",
       "notes": "Added Profile::from_config() and from_config_with_overrides() matching Go NewClient/NewClientWithOptions config resolution. Moved ClientParams to config module. Eliminated all dead-code warnings from config.rs. 5 new tests. Complete."
+    },
+    {
+      "id": "F032",
+      "name": "gRPC transport layer",
+      "module": "transport",
+      "category": "source",
+      "go_reference": "libmodal/modal-go/client.go",
+      "priority": "high",
+      "status": "done",
+      "notes": "Real gRPC transport layer connecting SDK to Modal API. ModalGrpcTransport struct wrapping tonic ModalClientClient<Channel> with TLS support. All 13 *GrpcClient trait implementations. Arc delegation for shared transport. Client::connect() and connect_with_options() constructors wiring all 11 services. 7 unit tests. Complete."
     }
   ]
 }

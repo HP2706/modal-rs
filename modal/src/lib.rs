@@ -63,6 +63,7 @@ pub mod invocation;
 pub mod interceptors;
 pub mod ephemeral;
 pub mod pickle;
+pub mod transport;
 
 #[cfg(test)]
 pub(crate) mod grpc_mock;

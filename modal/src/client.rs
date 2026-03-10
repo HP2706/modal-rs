@@ -1,17 +1,21 @@
-use crate::app::AppService;
+use std::sync::Arc;
+
+use crate::app::{AppService, AppServiceImpl};
 use crate::cloud_bucket_mount::{CloudBucketMountService, CloudBucketMountServiceImpl};
-use crate::cls::ClsService;
+use crate::cls::{ClsService, ClsServiceImpl};
 use crate::config::Profile;
 // Re-export ClientParams from config so existing imports from client::ClientParams still work.
 pub use crate::config::ClientParams;
-use crate::function::FunctionService;
-use crate::function_call::FunctionCallService;
-use crate::image::ImageService;
-use crate::proxy::ProxyService;
-use crate::queue::QueueService;
-use crate::sandbox::SandboxService;
-use crate::secret::SecretService;
-use crate::volume::VolumeService;
+use crate::error::ModalError;
+use crate::function::{FunctionService, FunctionServiceImpl};
+use crate::function_call::{FunctionCallService, FunctionCallServiceImpl};
+use crate::image::{ImageService, ImageServiceImpl};
+use crate::proxy::{ProxyService, ProxyServiceImpl};
+use crate::queue::{QueueService, QueueServiceImpl};
+use crate::sandbox::{SandboxService, SandboxServiceImpl};
+use crate::secret::{SecretService, SecretServiceImpl};
+use crate::transport::ModalGrpcTransport;
+use crate::volume::{VolumeService, VolumeServiceImpl};
 
 /// Client exposes services for interacting with Modal resources.
 /// Matches the Go SDK's Client struct with service accessors for all resource types.
@@ -184,6 +188,47 @@ impl Client {
     /// Returns the SDK version.
     pub fn version(&self) -> &str {
         &self.sdk_version
+    }
+
+    /// Create a new Client connected to the Modal API.
+    ///
+    /// Resolves credentials from environment variables and `~/.modal.toml`,
+    /// matching the Go SDK's `NewClient()` function.
+    ///
+    /// Must be called from within a tokio runtime.
+    pub fn connect() -> Result<Self, ModalError> {
+        Self::connect_with_options(None)
+    }
+
+    /// Create a new Client connected to the Modal API with optional overrides.
+    ///
+    /// Matches the Go SDK's `NewClientWithOptions()` function.
+    ///
+    /// Must be called from within a tokio runtime.
+    pub fn connect_with_options(params: Option<&ClientParams>) -> Result<Self, ModalError> {
+        let profile = match params {
+            Some(p) => Profile::from_config_with_overrides(Some(p))?,
+            None => Profile::from_config()?,
+        };
+
+        let sdk_version = "0.1.0";
+        let transport = Arc::new(ModalGrpcTransport::connect(&profile, sdk_version)?);
+
+        Ok(Client {
+            profile: profile.clone(),
+            sdk_version: sdk_version.to_string(),
+            apps: Box::new(AppServiceImpl { client: Arc::clone(&transport), profile: profile.clone() }),
+            cloud_bucket_mounts: Box::new(CloudBucketMountServiceImpl),
+            cls: Box::new(ClsServiceImpl { client: Arc::clone(&transport), profile: profile.clone() }),
+            functions: Box::new(FunctionServiceImpl::new(Arc::clone(&transport), profile.clone())),
+            function_calls: Box::new(FunctionCallServiceImpl),
+            images: Box::new(ImageServiceImpl { client: Arc::clone(&transport) }),
+            proxies: Box::new(ProxyServiceImpl { client: Arc::clone(&transport), profile: profile.clone() }),
+            queues: Box::new(QueueServiceImpl { client: Arc::clone(&transport), profile: profile.clone() }),
+            sandboxes: Box::new(SandboxServiceImpl { client: Arc::clone(&transport) }),
+            secrets: Box::new(SecretServiceImpl { client: Arc::clone(&transport), profile: profile.clone() }),
+            volumes: Box::new(VolumeServiceImpl { client: Arc::clone(&transport), profile }),
+        })
     }
 }
 
