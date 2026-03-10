@@ -2,12 +2,18 @@
 ///
 /// This module provides the bridge between the abstract `*GrpcClient` traits
 /// used by service implementations and the actual tonic-generated gRPC client.
+///
+/// The transport uses a tonic `Interceptor` for automatic header injection on
+/// every gRPC request (matching the Go SDK's `headerInjectorUnaryInterceptor`),
+/// and includes transport-level retry logic for transient gRPC errors (matching
+/// the Go SDK's `retryInterceptor`).
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+use tonic::service::interceptor::InterceptedService;
 use tonic::transport::{Channel, ClientTlsConfig, Endpoint};
-use tonic::{metadata::MetadataValue, Request, Status};
+use tonic::Status;
 
 use modal_proto::modal_proto as pb;
 use modal_proto::modal_proto::modal_client_client::ModalClientClient;
@@ -16,6 +22,7 @@ use crate::config::Profile;
 use crate::error::ModalError;
 use crate::function::FunctionStats;
 use crate::image::{ImageBuildResult, ImageJoinStreamingResult, ImageLayerBuildRequest};
+use crate::interceptors::{GrpcRetryConfig, ModalInterceptor};
 use crate::sandbox::{
     ExecWaitResult, SandboxCreateConnectCredentials, SandboxCreateParams, SandboxExecParams,
     SandboxListEntry, SandboxPollResult, SandboxSnapshotResult, SandboxTunnelsResult,
@@ -27,21 +34,29 @@ use crate::sandbox_filesystem::{FilesystemExecRequest, FilesystemExecResponse};
 const API_ENDPOINT: &str = "api.modal.com:443";
 const MAX_MESSAGE_SIZE: usize = 100 * 1024 * 1024; // 100 MB
 
-/// The real gRPC transport, wrapping a tonic `ModalClientClient`.
+/// Type alias for the intercepted gRPC client.
+type InterceptedClient = ModalClientClient<InterceptedService<Channel, ModalInterceptor>>;
+
+/// The real gRPC transport, wrapping a tonic `ModalClientClient` with
+/// automatic header injection and transport-level retry.
 ///
-/// This struct holds a connected gRPC channel and implements all `*GrpcClient`
-/// traits so it can be used to back all service implementations.
+/// Headers (token, client type, version) are injected automatically via
+/// the `ModalInterceptor` on every request. Transient gRPC errors
+/// (DeadlineExceeded, Unavailable, Canceled) are retried with exponential
+/// backoff matching the Go SDK defaults.
 #[derive(Debug)]
 pub struct ModalGrpcTransport {
-    client: Mutex<ModalClientClient<Channel>>,
+    client: Mutex<InterceptedClient>,
+    retry_config: GrpcRetryConfig,
     runtime: tokio::runtime::Handle,
 }
 
 impl ModalGrpcTransport {
     /// Connect to a Modal API server using the given profile.
     ///
-    /// This creates a TLS-enabled gRPC channel for HTTPS URLs,
-    /// or an insecure channel for HTTP URLs (e.g. localhost testing).
+    /// Creates a TLS-enabled gRPC channel for HTTPS URLs or an insecure
+    /// channel for HTTP URLs (e.g. localhost testing). Installs the
+    /// `ModalInterceptor` for automatic header injection on every request.
     pub fn connect(profile: &Profile, sdk_version: &str) -> Result<Self, ModalError> {
         let runtime = tokio::runtime::Handle::try_current().map_err(|_| {
             ModalError::Other(
@@ -55,6 +70,7 @@ impl ModalGrpcTransport {
 
         Ok(Self {
             client: Mutex::new(client),
+            retry_config: GrpcRetryConfig::default(),
             runtime,
         })
     }
@@ -97,45 +113,15 @@ impl ModalGrpcTransport {
         channel: Channel,
         profile: &Profile,
         sdk_version: &str,
-    ) -> Result<ModalClientClient<Channel>, ModalError> {
-        // Validate credentials
-        if profile.token_id.is_empty() || profile.token_secret.is_empty() {
-            return Err(ModalError::Config(
-                "missing token_id or token_secret, please set in .modal.toml, environment variables, or via ClientParams".to_string(),
-            ));
-        }
+    ) -> Result<InterceptedClient, ModalError> {
+        let interceptor =
+            ModalInterceptor::new(&profile.token_id, &profile.token_secret, sdk_version)?;
 
-        let client = ModalClientClient::new(channel)
+        let client = ModalClientClient::with_interceptor(channel, interceptor)
             .max_decoding_message_size(MAX_MESSAGE_SIZE)
             .max_encoding_message_size(MAX_MESSAGE_SIZE);
 
-        // Note: tonic interceptors are set per-request via inject_metadata.
-        // For a production implementation, you would use tower layers or
-        // tonic interceptors for automatic header injection.
-        let _ = sdk_version; // Will be used when we set up interceptors
         Ok(client)
-    }
-
-    /// Inject Modal auth headers into a gRPC request.
-    /// Used when making authenticated calls with per-request metadata.
-    #[allow(dead_code)]
-    fn inject_metadata<T>(&self, request: &mut Request<T>, profile: &Profile, sdk_version: &str) {
-        let metadata = request.metadata_mut();
-        if let Ok(v) = MetadataValue::try_from(&profile.token_id) {
-            metadata.insert("x-modal-token-id", v);
-        }
-        if let Ok(v) = MetadataValue::try_from(&profile.token_secret) {
-            metadata.insert("x-modal-token-secret", v);
-        }
-        if let Ok(v) = MetadataValue::try_from("9") {
-            metadata.insert("x-modal-client-type", v);
-        }
-        if let Ok(v) = MetadataValue::try_from("1.0.0") {
-            metadata.insert("x-modal-client-version", v);
-        }
-        if let Ok(v) = MetadataValue::try_from(format!("modal-rs/{}", sdk_version)) {
-            metadata.insert("x-modal-libmodal-version", v);
-        }
     }
 
     /// Convert a tonic Status to a ModalError.
@@ -143,14 +129,24 @@ impl ModalGrpcTransport {
         ModalError::Grpc(status)
     }
 
-    /// Execute a blocking gRPC call on the runtime.
+    /// Execute a gRPC call with automatic retry on transient errors.
+    ///
+    /// Retries on DeadlineExceeded, Unavailable, and Canceled with exponential
+    /// backoff matching the Go SDK's `retryInterceptor`.
+    fn retry_block_on<T, F, Fut>(&self, make_call: F) -> Result<T, ModalError>
+    where
+        F: Fn(crate::interceptors::RetryContext<'_>) -> Fut,
+        Fut: std::future::Future<Output = Result<T, Status>>,
+    {
+        crate::interceptors::retry_call(&self.runtime, &self.retry_config, make_call)
+    }
+
+    /// Execute a blocking gRPC call without retry (used for streaming RPC init).
     fn block_on<F: std::future::Future<Output = Result<T, Status>>, T>(
         &self,
         f: F,
     ) -> Result<T, ModalError> {
-        self.runtime
-            .block_on(f)
-            .map_err(Self::status_to_error)
+        self.runtime.block_on(f).map_err(Self::status_to_error)
     }
 }
 
@@ -170,8 +166,11 @@ impl crate::app::AppGrpcClient for ModalGrpcTransport {
             environment_name: environment_name.to_string(),
             object_creation_type,
         };
-        let mut client = self.client.lock().unwrap().clone();
-        let resp = self.block_on(client.app_get_or_create(request))?;
+        let resp = self.retry_block_on(|_ctx| {
+            let mut client = self.client.lock().unwrap().clone();
+            let req = request.clone();
+            async move { client.app_get_or_create(req).await }
+        })?;
         Ok(resp.into_inner().app_id)
     }
 }
@@ -192,9 +191,13 @@ impl crate::cls::ClsGrpcClient for ModalGrpcTransport {
             object_tag: object_tag.to_string(),
             environment_name: environment_name.to_string(),
         };
-        let mut client = self.client.lock().unwrap().clone();
-        let resp = self.block_on(client.function_get(request))?.into_inner();
-        Ok((resp.function_id, resp.handle_metadata))
+        let resp = self.retry_block_on(|_ctx| {
+            let mut client = self.client.lock().unwrap().clone();
+            let req = request.clone();
+            async move { client.function_get(req).await }
+        })?;
+        let inner = resp.into_inner();
+        Ok((inner.function_id, inner.handle_metadata))
     }
 }
 
@@ -219,8 +222,11 @@ impl crate::secret::SecretGrpcClient for ModalGrpcTransport {
             required_keys: required_keys.to_vec(),
             app_id: String::new(),
         };
-        let mut client = self.client.lock().unwrap().clone();
-        let resp = self.block_on(client.secret_get_or_create(request))?;
+        let resp = self.retry_block_on(|_ctx| {
+            let mut client = self.client.lock().unwrap().clone();
+            let req = request.clone();
+            async move { client.secret_get_or_create(req).await }
+        })?;
         Ok(resp.into_inner().secret_id)
     }
 
@@ -228,8 +234,11 @@ impl crate::secret::SecretGrpcClient for ModalGrpcTransport {
         let request = pb::SecretDeleteRequest {
             secret_id: secret_id.to_string(),
         };
-        let mut client = self.client.lock().unwrap().clone();
-        self.block_on(client.secret_delete(request))?;
+        self.retry_block_on(|_ctx| {
+            let mut client = self.client.lock().unwrap().clone();
+            let req = request.clone();
+            async move { client.secret_delete(req).await }
+        })?;
         Ok(())
     }
 }
@@ -250,8 +259,11 @@ impl crate::function::FunctionGrpcClient for ModalGrpcTransport {
             object_tag: object_tag.to_string(),
             environment_name: environment_name.to_string(),
         };
-        let mut client = self.client.lock().unwrap().clone();
-        let resp = self.block_on(client.function_get(request))?;
+        let resp = self.retry_block_on(|_ctx| {
+            let mut client = self.client.lock().unwrap().clone();
+            let req = request.clone();
+            async move { client.function_get(req).await }
+        })?;
         Ok(resp.into_inner())
     }
 
@@ -262,11 +274,15 @@ impl crate::function::FunctionGrpcClient for ModalGrpcTransport {
         let request = pb::FunctionGetCurrentStatsRequest {
             function_id: function_id.to_string(),
         };
-        let mut client = self.client.lock().unwrap().clone();
-        let resp = self.block_on(client.function_get_current_stats(request))?.into_inner();
+        let resp = self.retry_block_on(|_ctx| {
+            let mut client = self.client.lock().unwrap().clone();
+            let req = request.clone();
+            async move { client.function_get_current_stats(req).await }
+        })?;
+        let inner = resp.into_inner();
         Ok(FunctionStats {
-            backlog: resp.backlog,
-            num_total_runners: resp.num_total_tasks,
+            backlog: inner.backlog,
+            num_total_runners: inner.num_total_tasks,
         })
     }
 
@@ -290,8 +306,11 @@ impl crate::function::FunctionGrpcClient for ModalGrpcTransport {
             warm_pool_size_override: 0,
             settings: Some(settings),
         };
-        let mut client = self.client.lock().unwrap().clone();
-        self.block_on(client.function_update_scheduling_params(request))?;
+        self.retry_block_on(|_ctx| {
+            let mut client = self.client.lock().unwrap().clone();
+            let req = request.clone();
+            async move { client.function_update_scheduling_params(req).await }
+        })?;
         Ok(())
     }
 }
@@ -311,8 +330,11 @@ impl crate::function_call::FunctionCallGrpcClient for ModalGrpcTransport {
             terminate_containers,
             function_id: None,
         };
-        let mut client = self.client.lock().unwrap().clone();
-        self.block_on(client.function_call_cancel(request))?;
+        self.retry_block_on(|_ctx| {
+            let mut client = self.client.lock().unwrap().clone();
+            let req = request.clone();
+            async move { client.function_call_cancel(req).await }
+        })?;
         Ok(())
     }
 }
@@ -338,8 +360,11 @@ impl crate::invocation::InvocationGrpcClient for ModalGrpcTransport {
             function_call_invocation_type,
             from_spawn_map: false,
         };
-        let mut client = self.client.lock().unwrap().clone();
-        let resp = self.block_on(client.function_map(request))?;
+        let resp = self.retry_block_on(|_ctx| {
+            let mut client = self.client.lock().unwrap().clone();
+            let req = request.clone();
+            async move { client.function_map(req).await }
+        })?;
         Ok(resp.into_inner())
     }
 
@@ -363,8 +388,11 @@ impl crate::invocation::InvocationGrpcClient for ModalGrpcTransport {
             start_idx: None,
             end_idx: None,
         };
-        let mut client = self.client.lock().unwrap().clone();
-        let resp = self.block_on(client.function_get_outputs(request))?;
+        let resp = self.retry_block_on(|_ctx| {
+            let mut client = self.client.lock().unwrap().clone();
+            let req = request.clone();
+            async move { client.function_get_outputs(req).await }
+        })?;
         Ok(resp.into_inner())
     }
 
@@ -377,8 +405,11 @@ impl crate::invocation::InvocationGrpcClient for ModalGrpcTransport {
             function_call_jwt: function_call_jwt.to_string(),
             inputs,
         };
-        let mut client = self.client.lock().unwrap().clone();
-        let resp = self.block_on(client.function_retry_inputs(request))?;
+        let resp = self.retry_block_on(|_ctx| {
+            let mut client = self.client.lock().unwrap().clone();
+            let req = request.clone();
+            async move { client.function_retry_inputs(req).await }
+        })?;
         Ok(resp.into_inner())
     }
 
@@ -392,8 +423,11 @@ impl crate::invocation::InvocationGrpcClient for ModalGrpcTransport {
             parent_input_id: String::new(),
             input: Some(input),
         };
-        let mut client = self.client.lock().unwrap().clone();
-        let resp = self.block_on(client.attempt_start(request))?;
+        let resp = self.retry_block_on(|_ctx| {
+            let mut client = self.client.lock().unwrap().clone();
+            let req = request.clone();
+            async move { client.attempt_start(req).await }
+        })?;
         Ok(resp.into_inner())
     }
 
@@ -408,8 +442,11 @@ impl crate::invocation::InvocationGrpcClient for ModalGrpcTransport {
             requested_at,
             timeout_secs,
         };
-        let mut client = self.client.lock().unwrap().clone();
-        let resp = self.block_on(client.attempt_await(request))?;
+        let resp = self.retry_block_on(|_ctx| {
+            let mut client = self.client.lock().unwrap().clone();
+            let req = request.clone();
+            async move { client.attempt_await(req).await }
+        })?;
         Ok(resp.into_inner())
     }
 
@@ -425,8 +462,11 @@ impl crate::invocation::InvocationGrpcClient for ModalGrpcTransport {
             input: Some(input),
             attempt_token: attempt_token.to_string(),
         };
-        let mut client = self.client.lock().unwrap().clone();
-        let resp = self.block_on(client.attempt_retry(request))?;
+        let resp = self.retry_block_on(|_ctx| {
+            let mut client = self.client.lock().unwrap().clone();
+            let req = request.clone();
+            async move { client.attempt_retry(req).await }
+        })?;
         Ok(resp.into_inner())
     }
 
@@ -434,8 +474,11 @@ impl crate::invocation::InvocationGrpcClient for ModalGrpcTransport {
         let request = pb::BlobGetRequest {
             blob_id: blob_id.to_string(),
         };
-        let mut client = self.client.lock().unwrap().clone();
-        let resp = self.block_on(client.blob_get(request))?;
+        let resp = self.retry_block_on(|_ctx| {
+            let mut client = self.client.lock().unwrap().clone();
+            let req = request.clone();
+            async move { client.blob_get(req).await }
+        })?;
         Ok(resp.into_inner())
     }
 }
@@ -449,8 +492,11 @@ impl crate::image::ImageGrpcClient for ModalGrpcTransport {
         let request = pb::ImageFromIdRequest {
             image_id: image_id.to_string(),
         };
-        let mut client = self.client.lock().unwrap().clone();
-        let resp = self.block_on(client.image_from_id(request))?;
+        let resp = self.retry_block_on(|_ctx| {
+            let mut client = self.client.lock().unwrap().clone();
+            let req = request.clone();
+            async move { client.image_from_id(req).await }
+        })?;
         Ok(resp.into_inner().image_id)
     }
 
@@ -458,8 +504,11 @@ impl crate::image::ImageGrpcClient for ModalGrpcTransport {
         let request = pb::ImageDeleteRequest {
             image_id: image_id.to_string(),
         };
-        let mut client = self.client.lock().unwrap().clone();
-        self.block_on(client.image_delete(request))?;
+        self.retry_block_on(|_ctx| {
+            let mut client = self.client.lock().unwrap().clone();
+            let req = request.clone();
+            async move { client.image_delete(req).await }
+        })?;
         Ok(())
     }
 
@@ -492,11 +541,15 @@ impl crate::image::ImageGrpcClient for ModalGrpcTransport {
             allow_global_deployment: false,
             ignore_cache: false,
         };
-        let mut client = self.client.lock().unwrap().clone();
-        let resp = self.block_on(client.image_get_or_create(proto_request))?.into_inner();
+        let resp = self.retry_block_on(|_ctx| {
+            let mut client = self.client.lock().unwrap().clone();
+            let req = proto_request.clone();
+            async move { client.image_get_or_create(req).await }
+        })?;
+        let inner = resp.into_inner();
 
         // Convert proto GenericResult to our ImageBuildStatus
-        let (status, exception) = match resp.result {
+        let (status, exception) = match inner.result {
             Some(ref result) => {
                 use crate::image::ImageBuildStatus;
                 let s = match result.status {
@@ -513,7 +566,7 @@ impl crate::image::ImageGrpcClient for ModalGrpcTransport {
             None => (crate::image::ImageBuildStatus::Pending, None),
         };
         Ok(ImageBuildResult {
-            image_id: resp.image_id,
+            image_id: inner.image_id,
             status,
             exception,
         })
@@ -602,8 +655,11 @@ impl crate::volume::VolumeGrpcClient for ModalGrpcTransport {
             app_id: String::new(),
             version: 0,
         };
-        let mut client = self.client.lock().unwrap().clone();
-        let resp = self.block_on(client.volume_get_or_create(request))?;
+        let resp = self.retry_block_on(|_ctx| {
+            let mut client = self.client.lock().unwrap().clone();
+            let req = request.clone();
+            async move { client.volume_get_or_create(req).await }
+        })?;
         Ok(resp.into_inner().volume_id)
     }
 
@@ -611,8 +667,11 @@ impl crate::volume::VolumeGrpcClient for ModalGrpcTransport {
         let request = pb::VolumeHeartbeatRequest {
             volume_id: volume_id.to_string(),
         };
-        let mut client = self.client.lock().unwrap().clone();
-        self.block_on(client.volume_heartbeat(request))?;
+        self.retry_block_on(|_ctx| {
+            let mut client = self.client.lock().unwrap().clone();
+            let req = request.clone();
+            async move { client.volume_heartbeat(req).await }
+        })?;
         Ok(())
     }
 
@@ -622,8 +681,11 @@ impl crate::volume::VolumeGrpcClient for ModalGrpcTransport {
             volume_id: volume_id.to_string(),
             environment_name: String::new(),
         };
-        let mut client = self.client.lock().unwrap().clone();
-        self.block_on(client.volume_delete(request))?;
+        self.retry_block_on(|_ctx| {
+            let mut client = self.client.lock().unwrap().clone();
+            let req = request.clone();
+            async move { client.volume_delete(req).await }
+        })?;
         Ok(())
     }
 }
@@ -644,8 +706,11 @@ impl crate::queue::QueueGrpcClient for ModalGrpcTransport {
             environment_name: environment_name.to_string(),
             object_creation_type,
         };
-        let mut client = self.client.lock().unwrap().clone();
-        let resp = self.block_on(client.queue_get_or_create(request))?;
+        let resp = self.retry_block_on(|_ctx| {
+            let mut client = self.client.lock().unwrap().clone();
+            let req = request.clone();
+            async move { client.queue_get_or_create(req).await }
+        })?;
         Ok(resp.into_inner().queue_id)
     }
 
@@ -653,8 +718,11 @@ impl crate::queue::QueueGrpcClient for ModalGrpcTransport {
         let request = pb::QueueHeartbeatRequest {
             queue_id: queue_id.to_string(),
         };
-        let mut client = self.client.lock().unwrap().clone();
-        self.block_on(client.queue_heartbeat(request))?;
+        self.retry_block_on(|_ctx| {
+            let mut client = self.client.lock().unwrap().clone();
+            let req = request.clone();
+            async move { client.queue_heartbeat(req).await }
+        })?;
         Ok(())
     }
 
@@ -662,8 +730,11 @@ impl crate::queue::QueueGrpcClient for ModalGrpcTransport {
         let request = pb::QueueDeleteRequest {
             queue_id: queue_id.to_string(),
         };
-        let mut client = self.client.lock().unwrap().clone();
-        self.block_on(client.queue_delete(request))?;
+        self.retry_block_on(|_ctx| {
+            let mut client = self.client.lock().unwrap().clone();
+            let req = request.clone();
+            async move { client.queue_delete(req).await }
+        })?;
         Ok(())
     }
 
@@ -678,8 +749,11 @@ impl crate::queue::QueueGrpcClient for ModalGrpcTransport {
             partition_key: partition_key.unwrap_or_default().to_vec(),
             all_partitions,
         };
-        let mut client = self.client.lock().unwrap().clone();
-        self.block_on(client.queue_clear(request))?;
+        self.retry_block_on(|_ctx| {
+            let mut client = self.client.lock().unwrap().clone();
+            let req = request.clone();
+            async move { client.queue_clear(req).await }
+        })?;
         Ok(())
     }
 
@@ -694,8 +768,11 @@ impl crate::queue::QueueGrpcClient for ModalGrpcTransport {
             partition_key: partition_key.unwrap_or_default().to_vec(),
             total,
         };
-        let mut client = self.client.lock().unwrap().clone();
-        let resp = self.block_on(client.queue_len(request))?;
+        let resp = self.retry_block_on(|_ctx| {
+            let mut client = self.client.lock().unwrap().clone();
+            let req = request.clone();
+            async move { client.queue_len(req).await }
+        })?;
         Ok(resp.into_inner().len)
     }
 
@@ -712,8 +789,11 @@ impl crate::queue::QueueGrpcClient for ModalGrpcTransport {
             n_values,
             partition_key: partition_key.unwrap_or_default().to_vec(),
         };
-        let mut client = self.client.lock().unwrap().clone();
-        let resp = self.block_on(client.queue_get(request))?;
+        let resp = self.retry_block_on(|_ctx| {
+            let mut client = self.client.lock().unwrap().clone();
+            let req = request.clone();
+            async move { client.queue_get(req).await }
+        })?;
         Ok(resp.into_inner().values)
     }
 
@@ -730,8 +810,11 @@ impl crate::queue::QueueGrpcClient for ModalGrpcTransport {
             partition_key: partition_key.unwrap_or_default().to_vec(),
             partition_ttl_seconds,
         };
-        let mut client = self.client.lock().unwrap().clone();
-        self.block_on(client.queue_put(request))?;
+        self.retry_block_on(|_ctx| {
+            let mut client = self.client.lock().unwrap().clone();
+            let req = request.clone();
+            async move { client.queue_put(req).await }
+        })?;
         Ok(())
     }
 
@@ -748,8 +831,11 @@ impl crate::queue::QueueGrpcClient for ModalGrpcTransport {
             last_entry_id: last_entry_id.to_string(),
             item_poll_timeout,
         };
-        let mut client = self.client.lock().unwrap().clone();
-        let resp = self.block_on(client.queue_next_items(request))?;
+        let resp = self.retry_block_on(|_ctx| {
+            let mut client = self.client.lock().unwrap().clone();
+            let req = request.clone();
+            async move { client.queue_next_items(req).await }
+        })?;
         Ok(resp
             .into_inner()
             .items
@@ -773,9 +859,13 @@ impl crate::proxy::ProxyGrpcClient for ModalGrpcTransport {
             name: name.to_string(),
             environment_name: environment_name.to_string(),
         };
-        let mut client = self.client.lock().unwrap().clone();
-        let resp = self.block_on(client.proxy_get(request))?.into_inner();
-        Ok(resp.proxy.and_then(|p| {
+        let resp = self.retry_block_on(|_ctx| {
+            let mut client = self.client.lock().unwrap().clone();
+            let req = request.clone();
+            async move { client.proxy_get(req).await }
+        })?;
+        let inner = resp.into_inner();
+        Ok(inner.proxy.and_then(|p| {
             if p.proxy_id.is_empty() {
                 None
             } else {
@@ -805,9 +895,12 @@ impl crate::sandbox::SandboxGrpcClient for ModalGrpcTransport {
             definition: Some(definition),
             environment_name: String::new(),
         };
-        let mut client = self.client.lock().unwrap().clone();
         let _ = params; // params are encoded into the definition in real usage
-        let resp = self.block_on(client.sandbox_create(request))?;
+        let resp = self.retry_block_on(|_ctx| {
+            let mut client = self.client.lock().unwrap().clone();
+            let req = request.clone();
+            async move { client.sandbox_create(req).await }
+        })?;
         Ok(resp.into_inner().sandbox_id)
     }
 
@@ -820,10 +913,14 @@ impl crate::sandbox::SandboxGrpcClient for ModalGrpcTransport {
             timeout: None,
             wait_until_ready: false,
         };
-        let mut client = self.client.lock().unwrap().clone();
-        let resp = self.block_on(client.sandbox_get_task_id(request))?.into_inner();
-        let has_result = resp.task_result.is_some();
-        Ok((resp.task_id, has_result))
+        let resp = self.retry_block_on(|_ctx| {
+            let mut client = self.client.lock().unwrap().clone();
+            let req = request.clone();
+            async move { client.sandbox_get_task_id(req).await }
+        })?;
+        let inner = resp.into_inner();
+        let has_result = inner.task_result.is_some();
+        Ok((inner.task_id, has_result))
     }
 
     fn container_exec(
@@ -861,8 +958,11 @@ impl crate::sandbox::SandboxGrpcClient for ModalGrpcTransport {
             workdir: if params.workdir.is_empty() { None } else { Some(params.workdir.clone()) },
             ..Default::default()
         };
-        let mut client = self.client.lock().unwrap().clone();
-        let resp = self.block_on(client.container_exec(request))?;
+        let resp = self.retry_block_on(|_ctx| {
+            let mut client = self.client.lock().unwrap().clone();
+            let req = request.clone();
+            async move { client.container_exec(req).await }
+        })?;
         Ok(resp.into_inner().exec_id)
     }
 
@@ -875,11 +975,15 @@ impl crate::sandbox::SandboxGrpcClient for ModalGrpcTransport {
             exec_id: exec_id.to_string(),
             timeout,
         };
-        let mut client = self.client.lock().unwrap().clone();
-        let resp = self.block_on(client.container_exec_wait(request))?.into_inner();
+        let resp = self.retry_block_on(|_ctx| {
+            let mut client = self.client.lock().unwrap().clone();
+            let req = request.clone();
+            async move { client.container_exec_wait(req).await }
+        })?;
+        let inner = resp.into_inner();
         Ok(ExecWaitResult {
-            exit_code: resp.exit_code,
-            completed: resp.completed,
+            exit_code: inner.exit_code,
+            completed: inner.completed,
         })
     }
 
@@ -892,9 +996,13 @@ impl crate::sandbox::SandboxGrpcClient for ModalGrpcTransport {
             sandbox_id: sandbox_id.to_string(),
             timeout,
         };
-        let mut client = self.client.lock().unwrap().clone();
-        let resp = self.block_on(client.sandbox_wait(request))?.into_inner();
-        let result = resp.result.unwrap_or_default();
+        let resp = self.retry_block_on(|_ctx| {
+            let mut client = self.client.lock().unwrap().clone();
+            let req = request.clone();
+            async move { client.sandbox_wait(req).await }
+        })?;
+        let inner = resp.into_inner();
+        let result = inner.result.unwrap_or_default();
         Ok(SandboxWaitResult {
             exit_code: result.exitcode,
             success: result.status == 1, // GenericStatus::Success
@@ -910,8 +1018,11 @@ impl crate::sandbox::SandboxGrpcClient for ModalGrpcTransport {
         let request = pb::SandboxTerminateRequest {
             sandbox_id: sandbox_id.to_string(),
         };
-        let mut client = self.client.lock().unwrap().clone();
-        self.block_on(client.sandbox_terminate(request))?;
+        self.retry_block_on(|_ctx| {
+            let mut client = self.client.lock().unwrap().clone();
+            let req = request.clone();
+            async move { client.sandbox_terminate(req).await }
+        })?;
         Ok(())
     }
 
@@ -921,8 +1032,11 @@ impl crate::sandbox::SandboxGrpcClient for ModalGrpcTransport {
             sandbox_id: sandbox_id.to_string(),
             timeout: 0.0,
         };
-        let mut client = self.client.lock().unwrap().clone();
-        self.block_on(client.sandbox_wait(request))?;
+        self.retry_block_on(|_ctx| {
+            let mut client = self.client.lock().unwrap().clone();
+            let req = request.clone();
+            async move { client.sandbox_wait(req).await }
+        })?;
         Ok(())
     }
 
@@ -937,8 +1051,11 @@ impl crate::sandbox::SandboxGrpcClient for ModalGrpcTransport {
             sandbox_name: name.to_string(),
             environment_name: environment.to_string(),
         };
-        let mut client = self.client.lock().unwrap().clone();
-        let resp = self.block_on(client.sandbox_get_from_name(request))?;
+        let resp = self.retry_block_on(|_ctx| {
+            let mut client = self.client.lock().unwrap().clone();
+            let req = request.clone();
+            async move { client.sandbox_get_from_name(req).await }
+        })?;
         Ok(resp.into_inner().sandbox_id)
     }
 
@@ -963,9 +1080,13 @@ impl crate::sandbox::SandboxGrpcClient for ModalGrpcTransport {
             include_finished: false,
             tags: proto_tags,
         };
-        let mut client = self.client.lock().unwrap().clone();
-        let resp = self.block_on(client.sandbox_list(request))?.into_inner();
-        Ok(resp
+        let resp = self.retry_block_on(|_ctx| {
+            let mut client = self.client.lock().unwrap().clone();
+            let req = request.clone();
+            async move { client.sandbox_list(req).await }
+        })?;
+        let inner = resp.into_inner();
+        Ok(inner
             .sandboxes
             .into_iter()
             .map(|s| SandboxListEntry {
@@ -980,9 +1101,13 @@ impl crate::sandbox::SandboxGrpcClient for ModalGrpcTransport {
             sandbox_id: sandbox_id.to_string(),
             timeout: 0.0,
         };
-        let mut client = self.client.lock().unwrap().clone();
-        let resp = self.block_on(client.sandbox_wait(request))?.into_inner();
-        match resp.result {
+        let resp = self.retry_block_on(|_ctx| {
+            let mut client = self.client.lock().unwrap().clone();
+            let req = request.clone();
+            async move { client.sandbox_wait(req).await }
+        })?;
+        let inner = resp.into_inner();
+        match inner.result {
             Some(result) if result.status != 0 => Ok(SandboxPollResult {
                 exit_code: Some(result.exitcode),
             }),
@@ -1007,8 +1132,11 @@ impl crate::sandbox::SandboxGrpcClient for ModalGrpcTransport {
             environment_name: String::new(),
             tags: proto_tags,
         };
-        let mut client = self.client.lock().unwrap().clone();
-        self.block_on(client.sandbox_tags_set(request))?;
+        self.retry_block_on(|_ctx| {
+            let mut client = self.client.lock().unwrap().clone();
+            let req = request.clone();
+            async move { client.sandbox_tags_set(req).await }
+        })?;
         Ok(())
     }
 
@@ -1019,9 +1147,13 @@ impl crate::sandbox::SandboxGrpcClient for ModalGrpcTransport {
         let request = pb::SandboxTagsGetRequest {
             sandbox_id: sandbox_id.to_string(),
         };
-        let mut client = self.client.lock().unwrap().clone();
-        let resp = self.block_on(client.sandbox_tags_get(request))?.into_inner();
-        Ok(resp
+        let resp = self.retry_block_on(|_ctx| {
+            let mut client = self.client.lock().unwrap().clone();
+            let req = request.clone();
+            async move { client.sandbox_tags_get(req).await }
+        })?;
+        let inner = resp.into_inner();
+        Ok(inner
             .tags
             .into_iter()
             .map(|t| (t.tag_name, t.tag_value))
@@ -1037,10 +1169,14 @@ impl crate::sandbox::SandboxGrpcClient for ModalGrpcTransport {
             sandbox_id: sandbox_id.to_string(),
             timeout,
         };
-        let mut client = self.client.lock().unwrap().clone();
-        let resp = self.block_on(client.sandbox_get_tunnels(request))?.into_inner();
-        let timed_out = resp.result.as_ref().map_or(false, |r| r.status == 4); // Timeout
-        let tunnels = resp
+        let resp = self.retry_block_on(|_ctx| {
+            let mut client = self.client.lock().unwrap().clone();
+            let req = request.clone();
+            async move { client.sandbox_get_tunnels(req).await }
+        })?;
+        let inner = resp.into_inner();
+        let timed_out = inner.result.as_ref().map_or(false, |r| r.status == 4); // Timeout
+        let tunnels = inner
             .tunnels
             .into_iter()
             .map(|t| {
@@ -1067,10 +1203,14 @@ impl crate::sandbox::SandboxGrpcClient for ModalGrpcTransport {
             sandbox_id: sandbox_id.to_string(),
             timeout,
         };
-        let mut client = self.client.lock().unwrap().clone();
-        let resp = self.block_on(client.sandbox_snapshot_fs(request))?.into_inner();
-        let success = resp.result.as_ref().map_or(false, |r| r.status == 1);
-        let exception = resp
+        let resp = self.retry_block_on(|_ctx| {
+            let mut client = self.client.lock().unwrap().clone();
+            let req = request.clone();
+            async move { client.sandbox_snapshot_fs(req).await }
+        })?;
+        let inner = resp.into_inner();
+        let success = inner.result.as_ref().map_or(false, |r| r.status == 1);
+        let exception = inner
             .result
             .as_ref()
             .and_then(|r| {
@@ -1081,7 +1221,7 @@ impl crate::sandbox::SandboxGrpcClient for ModalGrpcTransport {
                 }
             });
         Ok(SandboxSnapshotResult {
-            image_id: resp.image_id,
+            image_id: inner.image_id,
             success,
             exception,
         })
@@ -1122,11 +1262,15 @@ impl crate::sandbox::SandboxGrpcClient for ModalGrpcTransport {
             sandbox_id: sandbox_id.to_string(),
             user_metadata: user_metadata.to_string(),
         };
-        let mut client = self.client.lock().unwrap().clone();
-        let resp = self.block_on(client.sandbox_create_connect_token(request))?.into_inner();
+        let resp = self.retry_block_on(|_ctx| {
+            let mut client = self.client.lock().unwrap().clone();
+            let req = request.clone();
+            async move { client.sandbox_create_connect_token(req).await }
+        })?;
+        let inner = resp.into_inner();
         Ok(SandboxCreateConnectCredentials {
-            url: resp.url,
-            token: resp.token,
+            url: inner.url,
+            token: inner.token,
         })
     }
 }
@@ -1215,11 +1359,15 @@ impl crate::sandbox_filesystem::SandboxFilesystemGrpcClient for ModalGrpcTranspo
             task_id: task_id.to_string(),
             file_exec_request_oneof,
         };
-        let mut client = self.client.lock().unwrap().clone();
-        let resp = self.block_on(client.container_filesystem_exec(proto_request))?.into_inner();
+        let resp = self.retry_block_on(|_ctx| {
+            let mut client = self.client.lock().unwrap().clone();
+            let req = proto_request.clone();
+            async move { client.container_filesystem_exec(req).await }
+        })?;
+        let inner = resp.into_inner();
         Ok(FilesystemExecResponse {
-            exec_id: resp.exec_id,
-            file_descriptor: resp.file_descriptor,
+            exec_id: inner.exec_id,
+            file_descriptor: inner.file_descriptor,
         })
     }
 
@@ -1271,8 +1419,11 @@ impl crate::task_command_router::TaskCommandRouterGrpcClient for ModalGrpcTransp
         let request = pb::TaskGetCommandRouterAccessRequest {
             task_id: task_id.to_string(),
         };
-        let mut client = self.client.lock().unwrap().clone();
-        let resp = self.block_on(client.task_get_command_router_access(request))?;
+        let resp = self.retry_block_on(|_ctx| {
+            let mut client = self.client.lock().unwrap().clone();
+            let req = request.clone();
+            async move { client.task_get_command_router_access(req).await }
+        })?;
         Ok(resp.into_inner())
     }
 

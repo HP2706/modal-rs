@@ -319,6 +319,16 @@
       "priority": "medium",
       "status": "done",
       "notes": "8 mock-based integration tests in client_test.rs covering client initialization, profile storage, all 11 service accessors, builder error handling, custom SDK version, debug representation, multiple independent clients, and ClientParams defaults. Equivalent to Go's client_test.go patterns. Complete."
+    },
+    {
+      "id": "F034",
+      "name": "gRPC interceptor chain",
+      "module": "interceptors/transport",
+      "category": "source",
+      "go_reference": "libmodal/modal-go/client.go",
+      "priority": "high",
+      "status": "done",
+      "notes": "Tonic interceptor for automatic header injection (token_id, token_secret, client_type, version) on every gRPC request. Transport-level retry with exponential backoff for transient errors (DeadlineExceeded, Unavailable, Canceled) matching Go SDK's retryInterceptor defaults (3 retries, 100ms base delay, 2x backoff, 1s max). InterceptedService<Channel, ModalInterceptor> type. 11 new tests. Complete."
     }
   ]
 }

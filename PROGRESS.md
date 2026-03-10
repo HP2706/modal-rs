@@ -1,5 +1,30 @@
 # Modal Rust SDK Progress
 
+## 2026-03-10 — gRPC interceptor chain (F034)
+
+### What was done
+Added automatic header injection and transport-level retry matching the Go SDK's interceptor chain:
+
+1. **`ModalInterceptor`** (`interceptors.rs`): Tonic `Interceptor` implementation that injects 5 required Modal headers (`x-modal-client-type`, `x-modal-client-version`, `x-modal-libmodal-version`, `x-modal-token-id`, `x-modal-token-secret`) on every gRPC request. Pre-parsed `MetadataValue` fields for efficiency. Credential validation at construction time.
+2. **`GrpcRetryConfig`** (`interceptors.rs`): Retry configuration matching Go SDK defaults — 3 retries, 100ms base delay, 1s max delay, 2x backoff. Retryable codes: DeadlineExceeded, Unavailable, Canceled.
+3. **`retry_call` / `retry_call_async`** (`interceptors.rs`): Retry execution with exponential backoff, idempotency key generation (timestamp + atomic counter), and `RetryContext` passed to each attempt.
+4. **`ModalGrpcTransport` updated** (`transport.rs`): Client type changed from `ModalClientClient<Channel>` to `ModalClientClient<InterceptedService<Channel, ModalInterceptor>>`. All ~30 unary RPC methods now use `retry_block_on` for automatic retry. Streaming RPCs (image_join_streaming, filesystem_exec_get_output) keep non-retry `block_on` for initial connection only.
+5. **Dead code removed**: `inject_metadata` method and `inject_required_headers` function replaced by proper tonic interceptor.
+6. **11 new tests**: 3 interceptor tests (header injection, credential validation), 2 config tests, 1 idempotency key test, 5 retry behavior tests (success, transient retry, non-retryable, exhaustion, context passing).
+
+### Test counts
+- Before: 455 unit tests + 187 integration tests
+- After: 466 unit tests + 187 integration tests (11 new)
+- All passing, zero compiler warnings
+
+### What's next
+- All 34 features (F001-F034) are done.
+- Remaining potential improvements:
+  - Auth token interceptor (proactive token refresh via AuthTokenManager)
+  - Live API integration testing (requires credentials and network access)
+
+---
+
 ## 2026-03-10 — Client integration tests (F033)
 
 ### What was done
