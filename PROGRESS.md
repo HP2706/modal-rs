@@ -1,5 +1,34 @@
 # Modal Rust SDK Progress
 
+## 2026-03-10 — Examples and SDK status assessment
+
+### Finding
+All 26 Rust examples in `modal/examples/` are **stubs** — they construct local types and print messages but do **not** make any actual Modal API calls. Every example contains comments like "With a real client, you would..." followed by pseudo-code.
+
+### Root cause
+The SDK is missing the **real gRPC client wiring layer**. Specifically:
+
+1. **No real `*GrpcClient` trait implementations** — All service traits (`FunctionGrpcClient`, `SandboxGrpcClient`, etc.) only have mock implementations. Nobody wraps the generated `ModalClientClient<tonic::transport::Channel>`.
+2. **No `Client::new()`** — `ClientBuilder` exists but requires pre-made service instances. There's no factory that reads credentials, establishes a gRPC connection, and wires up real services.
+3. **No `Profile → Client` bridge** — `Profile::from_config()` resolves credentials and connection info but there's no `Profile::create_client()` to actually connect.
+
+The Go SDK does this in `client.go`: `NewClient()` → `grpc.ClientConn` → real `ModalClientClient` → concrete `*ServiceImpl` structs. The Rust SDK has the same architecture but stops before the final wiring step.
+
+### Current state
+- 451 unit tests (all mock-based, all passing)
+- 179 integration tests (all mock-based, all passing)
+- 26 examples (compile and run, but only exercise local type construction)
+- Zero compiler warnings
+- **No network calls to Modal API anywhere in the codebase**
+
+### What's needed to make examples work
+1. Implement `*GrpcClient` traits wrapping `ModalClientClient<tonic::transport::Channel>`
+2. Add `Client::new()` / `Client::from_profile()` that creates real gRPC connections with TLS and auth
+3. Wire real services into `ClientBuilder`
+4. Rewrite examples to use real `Client::new()` with `#[tokio::main] async fn main()`
+
+---
+
 ## 2026-03-10 — Profile config resolution and dead-code cleanup
 
 ### What was done
