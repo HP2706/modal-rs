@@ -1,35 +1,50 @@
-// Rust equivalent of examples/telemetry (Go).
-//
-// Demonstrates how to add custom telemetry and tracing to Modal API calls
-// using gRPC interceptors.
-// Requires a running Modal backend to execute.
+// Demonstrates telemetry and tracing patterns with the Modal client.
+// Runs against real Modal API.
 
-use modal::client::ClientParams;
+use modal::client::Client;
 
 fn main() {
-    // The Rust SDK supports custom gRPC interceptors via tonic.
-    // Custom interceptors can measure latency, add tracing headers, etc.
+    println!("Connecting to Modal...");
+    let start = std::time::Instant::now();
+    let client = Client::connect().expect("Failed to connect to Modal");
+    let connect_time = start.elapsed();
+    println!("Connected in {:?}", connect_time);
 
-    // Client params for custom configuration.
-    let _params = ClientParams {
-        token_id: "ak-custom-id".to_string(),
-        token_secret: "as-custom-secret".to_string(),
-        environment: String::new(),
-    };
-    println!("Client configured with custom credentials.");
+    // Measure API call latency
+    let start = std::time::Instant::now();
+    let _app = client
+        .apps
+        .from_name(
+            "libmodal-rs-example",
+            Some(&modal::app::AppFromNameParams {
+                create_if_missing: true,
+                ..Default::default()
+            }),
+        )
+        .expect("Failed to create app");
+    let api_time = start.elapsed();
+    println!("App lookup/create: {:?}", api_time);
 
-    // Modal provides inject_required_headers() for building gRPC metadata.
-    // In a real interceptor, you would wrap the tonic channel:
+    // The Rust SDK uses tonic gRPC with automatic retry and header injection.
+    // Custom interceptors can be added by wrapping the transport channel.
     //
-    //   use modal::interceptors::inject_required_headers;
-    //   use modal::config::Profile;
+    // The interceptor chain (in modal::interceptors) handles:
+    // - Required headers (x-modal-client-type, x-modal-token-id, etc.)
+    // - Retry with backoff for transient errors
+    // - SDK version reporting
     //
-    //   let interceptor = |mut req: tonic::Request<()>| {
-    //       let start = std::time::Instant::now();
-    //       // Add custom headers, measure timing, etc.
-    //       Ok(req)
-    //   };
+    // For custom telemetry, wrap calls with timing:
+    let start = std::time::Instant::now();
+    let image = client.images.from_registry("alpine:3.21", None);
+    let _image = client.images.build(
+        &image,
+        &modal::image::ImageBuildParams {
+            app_id: _app.app_id.clone(),
+            ..Default::default()
+        },
+    ).expect("Failed to build image");
+    let build_time = start.elapsed();
+    println!("Image build: {:?}", build_time);
 
-    println!("Telemetry interceptor pattern demonstrated.");
-    println!("In production, wrap tonic channels with custom interceptors.");
+    println!("Done!");
 }

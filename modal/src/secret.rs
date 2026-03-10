@@ -115,7 +115,7 @@ impl<C: SecretGrpcClient> SecretService for SecretServiceImpl<C> {
             "",
             &env,
             &[],
-            3, // OBJECT_CREATION_TYPE_EPHEMERAL
+            5, // OBJECT_CREATION_TYPE_EPHEMERAL
             key_value_pairs,
         )?;
 

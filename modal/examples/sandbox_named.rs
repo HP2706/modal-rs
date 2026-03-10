@@ -1,31 +1,69 @@
-// Rust equivalent of examples/sandbox-named (Go).
-//
-// Demonstrates creating a named Sandbox that persists and can be
-// retrieved by name.
-// Requires a running Modal backend to execute.
+// Demonstrates creating a named Sandbox and retrieving it by name.
+// Runs against real Modal API.
 
-use modal::sandbox::SandboxFromNameParams;
+use modal::app::AppFromNameParams;
+use modal::client::Client;
+use modal::image::ImageBuildParams;
+use modal::sandbox::SandboxCreateParams;
 
 fn main() {
-    // Named sandboxes can be retrieved by name after creation.
-    let from_name_params = SandboxFromNameParams {
-        environment: String::new(),
-    };
-    println!("From-name params - environment: '{}'", from_name_params.environment);
+    println!("Connecting to Modal...");
+    let client = Client::connect().expect("Failed to connect to Modal");
 
-    // With a real client:
-    //   let sb = sandbox_service.create(app, image, &SandboxCreateParams {
-    //       name: "libmodal-example-named-sandbox".to_string(),
-    //       command: vec!["cat"],
-    //   })?;
-    //
-    //   // Creating another sandbox with the same name returns AlreadyExistsError.
-    //   match sandbox_service.create(app, image, &same_name_params) {
-    //       Err(ModalError::AlreadyExists(msg)) => println!("Expected: {}", msg),
-    //       _ => panic!("should have returned AlreadyExistsError"),
-    //   }
-    //
-    //   // Retrieve by name:
-    //   let sb_by_name = sandbox_service.from_name("libmodal-example", sandbox_name, None)?;
-    println!("Named sandbox configuration ready.");
+    let app = client
+        .apps
+        .from_name(
+            "libmodal-rs-example",
+            Some(&AppFromNameParams {
+                create_if_missing: true,
+                ..Default::default()
+            }),
+        )
+        .expect("Failed to get or create app");
+
+    let image = client.images.from_registry("alpine:3.21", None);
+    let image = client
+        .images
+        .build(
+            &image,
+            &ImageBuildParams {
+                app_id: app.app_id.clone(),
+                ..Default::default()
+            },
+        )
+        .expect("Failed to build image");
+
+    let sandbox_name = format!("rs-named-example-{}", std::process::id());
+
+    // Create a named sandbox
+    let sandbox = client
+        .sandboxes
+        .create(
+            &app.app_id,
+            &image.image_id,
+            SandboxCreateParams {
+                command: vec![
+                    "sh".to_string(),
+                    "-c".to_string(),
+                    "echo 'I am a named sandbox'; sleep 5".to_string(),
+                ],
+                name: sandbox_name.clone(),
+                timeout_secs: Some(60),
+                ..Default::default()
+            },
+        )
+        .expect("Failed to create named sandbox");
+    println!("Created named sandbox: {} (name={})", sandbox.sandbox_id, sandbox_name);
+
+    // Retrieve it by name
+    let found = client
+        .sandboxes
+        .from_name("libmodal-rs-example", &sandbox_name, None)
+        .expect("Failed to find sandbox by name");
+    println!("Found by name: {}", found.sandbox_id);
+    assert_eq!(sandbox.sandbox_id, found.sandbox_id);
+
+    // Clean up
+    let _ = client.sandboxes.terminate(&sandbox.sandbox_id);
+    println!("Done!");
 }

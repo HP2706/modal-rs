@@ -250,7 +250,7 @@ impl<C: QueueGrpcClient> QueueService for QueueServiceImpl<C> {
         let queue_id = self.client.queue_get_or_create(
             "",
             &env,
-            3, // OBJECT_CREATION_TYPE_EPHEMERAL
+            5, // OBJECT_CREATION_TYPE_EPHEMERAL
         )?;
 
         let notify = Arc::new(tokio::sync::Notify::new());

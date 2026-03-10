@@ -1,36 +1,48 @@
-// Rust equivalent of examples/cls-call-with-options (Go).
+// Demonstrates looking up a Modal Cls with custom ServiceOptions.
+// Runs against real Modal API.
 //
-// Demonstrates calling a Modal Cls with custom options including Secrets
-// and concurrency configuration.
-// Requires a running Modal backend to execute.
+// Requires: `modal deploy test_support.py` to deploy the test support app first.
+//
+// Note: The Rust SDK can resolve Cls definitions and configure ServiceOptions
+// but does not yet implement with_options()/instance()/method() for invocation.
 
+use std::collections::HashMap;
+
+use modal::client::Client;
 use modal::cls::ServiceOptions;
-use modal::secret::Secret;
 
 fn main() {
-    // Create a Secret (normally via secret_service.from_map)
-    let secret = Secret {
-        secret_id: "st-secret-123".to_string(),
-        name: String::new(),
-    };
-    println!("Secret ID: {}", secret.secret_id);
+    println!("Connecting to Modal...");
+    let client = Client::connect().expect("Failed to connect to Modal");
 
-    // ServiceOptions can override Cls runtime configuration
-    let options = ServiceOptions {
+    // Create an ephemeral secret to inject as an env var
+    let secret = client
+        .secrets
+        .from_map(
+            &HashMap::from([("MY_SECRET_VAR".to_string(), "secret-value".to_string())]),
+            None,
+        )
+        .expect("Failed to create ephemeral secret");
+    println!("Ephemeral secret: {}", secret.secret_id);
+
+    // Configure service options
+    let _options = ServiceOptions {
         secrets: Some(vec![secret]),
         max_concurrent_inputs: Some(1),
         ..Default::default()
     };
-    println!(
-        "Cls options - secrets: {}, max_concurrent_inputs: {:?}",
-        options.secrets.as_ref().map_or(0, |s| s.len()),
-        options.max_concurrent_inputs
-    );
 
-    // With a real client:
-    //   let cls = cls_service.from_name("libmodal-test-support", "EchoClsParametrized", None)?;
-    //   let instance_with_options = cls.with_options(&options).instance(None)?;
-    //   let method = instance_with_options.method("echo_env_var")?;
-    //   let result = method.remote(ctx, &["SECRET_MESSAGE"], None)?;
-    println!("Cls with custom options configured.");
+    // Look up the deployed class
+    let cls = client
+        .cls
+        .from_name("libmodal-rs-test-support", "EchoCls", None)
+        .expect("Failed to look up Cls");
+    println!("Cls service function ID: {}", cls.service_function_id);
+
+    // TODO: Once with_options()/instance()/method() are implemented:
+    //   let instance = cls.with_options(&options).instance(None)?;
+    //   let method = instance.method("echo_env_var")?;
+    //   let result = method.remote(transport, &args, &kwargs)?;
+
+    println!("Done!");
 }

@@ -1,35 +1,69 @@
-// Rust equivalent of examples/sandbox-gpu (Go).
-//
 // Demonstrates creating a Sandbox with GPU access.
-// Requires a running Modal backend to execute.
+// Runs against real Modal API.
+//
+// Requires: GPU quota on your Modal account (A10G or similar).
+// Will fail with a scheduling error if no GPU quota is available.
 
-use modal::app::parse_gpu_config;
-use modal::image::Image;
+use modal::app::AppFromNameParams;
+use modal::client::Client;
+use modal::image::ImageBuildParams;
+use modal::sandbox::SandboxCreateParams;
 
 fn main() {
-    // Parse GPU configuration string.
-    let gpu_config = parse_gpu_config("A10G").unwrap();
-    println!("GPU type: {}, count: {}", gpu_config.gpu_type, gpu_config.count);
+    println!("Connecting to Modal...");
+    let client = Client::connect().expect("Failed to connect to Modal");
 
-    // Multi-GPU configuration:
-    let multi_gpu = parse_gpu_config("A100:2").unwrap();
-    println!("GPU type: {}, count: {}", multi_gpu.gpu_type, multi_gpu.count);
+    let app = client
+        .apps
+        .from_name(
+            "libmodal-rs-example",
+            Some(&AppFromNameParams {
+                create_if_missing: true,
+                ..Default::default()
+            }),
+        )
+        .expect("Failed to get or create app");
 
-    // NVIDIA CUDA image for GPU workloads.
-    let image = Image {
-        image_id: String::new(),
-        image_registry_config: None,
-        tag: "nvidia/cuda:12.4.0-devel-ubuntu22.04".to_string(),
-        layers: vec![Default::default()],
-    };
-    println!("Image tag: {}", image.tag);
+    // Use NVIDIA CUDA image for GPU workloads
+    let base = client
+        .images
+        .from_registry("nvidia/cuda:12.4.0-devel-ubuntu22.04", None);
+    let image = client
+        .images
+        .build(
+            &base,
+            &ImageBuildParams {
+                app_id: app.app_id.clone(),
+                ..Default::default()
+            },
+        )
+        .expect("Failed to build image");
 
-    // With a real client:
-    //   let sb = sandbox_service.create(app, image, &SandboxCreateParams {
-    //       gpu: "A10G",
-    //       ..Default::default()
-    //   })?;
-    //   let p = sb.exec(["nvidia-smi"], None)?;
-    //   let output = p.stdout.read_to_string()?;
-    println!("GPU sandbox configuration ready.");
+    // Create sandbox with GPU
+    let sandbox = client
+        .sandboxes
+        .create(
+            &app.app_id,
+            &image.image_id,
+            SandboxCreateParams {
+                command: vec!["nvidia-smi".to_string()],
+                gpu: "A10G".to_string(),
+                timeout_secs: Some(120),
+                ..Default::default()
+            },
+        )
+        .expect("Failed to create GPU sandbox");
+    println!("Sandbox: {}", sandbox.sandbox_id);
+
+    let result = client
+        .sandboxes
+        .wait(&sandbox.sandbox_id, 120.0)
+        .expect("Failed to wait");
+    println!(
+        "exit_code={}, success={}",
+        result.exit_code, result.success
+    );
+
+    let _ = client.sandboxes.terminate(&sandbox.sandbox_id);
+    println!("Done!");
 }

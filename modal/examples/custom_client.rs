@@ -1,34 +1,45 @@
-// Rust equivalent of examples/custom-client (Go).
+// Demonstrates creating a Modal client with custom credentials.
+// Runs against real Modal API.
 //
-// Demonstrates creating a Modal client with custom credentials from
-// environment variables.
+// Uses standard MODAL_TOKEN_ID and MODAL_TOKEN_SECRET env vars by default,
+// or set CUSTOM_MODAL_ID and CUSTOM_MODAL_SECRET to use custom credentials.
 
-use modal::client::ClientParams;
+use modal::client::{Client, ClientParams};
 
 fn main() {
-    // Read credentials from environment variables.
-    let modal_id = std::env::var("CUSTOM_MODAL_ID").unwrap_or_default();
-    let modal_secret = std::env::var("CUSTOM_MODAL_SECRET").unwrap_or_default();
+    // Try custom credentials first, fall back to default env vars
+    let custom_id = std::env::var("CUSTOM_MODAL_ID").ok();
+    let custom_secret = std::env::var("CUSTOM_MODAL_SECRET").ok();
 
-    if modal_id.is_empty() {
-        println!("CUSTOM_MODAL_ID not set (expected in real usage)");
-    }
-    if modal_secret.is_empty() {
-        println!("CUSTOM_MODAL_SECRET not set (expected in real usage)");
-    }
-
-    // Create a client with custom credentials.
-    let params = ClientParams {
-        token_id: modal_id,
-        token_secret: modal_secret,
-        environment: String::new(),
+    let client = if let (Some(id), Some(secret)) = (custom_id, custom_secret) {
+        println!("Connecting with custom credentials...");
+        Client::connect_with_options(Some(&ClientParams {
+            token_id: id,
+            token_secret: secret,
+            environment: String::new(),
+        }))
+        .expect("Failed to connect with custom credentials")
+    } else {
+        println!("No custom credentials set, connecting with default...");
+        println!("(Set CUSTOM_MODAL_ID and CUSTOM_MODAL_SECRET to test custom auth)");
+        Client::connect().expect("Failed to connect")
     };
-    println!("Client params configured with custom credentials.");
 
-    // Note: Client::with_options reads config files which may not exist
-    // in all environments. In production:
-    //   let client = Client::with_options(Some(&params))?;
-    //   let echo = function_service.from_name("libmodal-test-support", "echo_string", None)?;
-    let _ = params;
-    println!("Custom client configuration ready.");
+    println!("Client version: {}", client.sdk_version);
+    println!("Environment: {}", client.profile.environment);
+
+    // Verify the client works by listing or creating an app
+    let _app = client
+        .apps
+        .from_name(
+            "libmodal-rs-example",
+            Some(&modal::app::AppFromNameParams {
+                create_if_missing: true,
+                ..Default::default()
+            }),
+        )
+        .expect("Failed to create app — credentials may be invalid");
+    println!("Successfully authenticated and created/found app.");
+
+    println!("Done!");
 }

@@ -1,23 +1,36 @@
-// Rust equivalent of examples/cls-call (Go).
+// Demonstrates looking up a Modal Cls (class) by name.
+// Runs against real Modal API.
 //
-// Demonstrates calling a Modal Cls (class) with positional and keyword arguments.
-// Requires a running Modal backend to execute.
+// Requires: `modal deploy test_support.py` to deploy the test support app first.
+//
+// Note: The Rust SDK can resolve Cls definitions via from_name() but does not yet
+// implement instance()/method()/remote() for invoking class methods. This example
+// demonstrates the lookup portion.
 
-use modal::cls::ServiceOptions;
+use modal::client::Client;
 
 fn main() {
-    // A Cls is resolved via the CLS service by app name and class name.
-    // With a real client:
-    //   let cls = cls_service.from_name("libmodal-test-support", "EchoCls", None)?;
+    println!("Connecting to Modal...");
+    let client = Client::connect().expect("Failed to connect to Modal");
+
+    // Look up the deployed class
+    let cls = client
+        .cls
+        .from_name("libmodal-rs-test-support", "EchoCls", None)
+        .expect("Failed to look up Cls");
+    println!("Cls service function ID: {}", cls.service_function_id);
+
+    if let Some(ref metadata) = cls.service_function_metadata {
+        println!(
+            "Function name: {:?}",
+            metadata.function_name
+        );
+    }
+
+    // TODO: Once instance()/method()/remote() are implemented:
     //   let instance = cls.instance(None)?;
     //   let method = instance.method("echo_string")?;
+    //   let result = method.remote(transport, &args, &kwargs)?;
 
-    // ServiceOptions control runtime configuration for a Cls.
-    let options = ServiceOptions::default();
-    println!("Default Cls options - CPU: {:?}, Memory: {:?}", options.cpu, options.memory_mib);
-
-    // Calling a Cls method:
-    //   let result = method.remote(ctx, &["Hello world!"], None)?;
-    //   let result = method.remote(ctx, None, &{"s": "Hello world!"})?;
-    println!("Cls configuration ready for invocation.");
+    println!("Done!");
 }

@@ -1,27 +1,43 @@
-// Rust equivalent of examples/function-spawn (Go).
+// Demonstrates spawning a Modal Function asynchronously and calling it.
+// Runs against real Modal API.
 //
-// Demonstrates spawning a Modal Function asynchronously and retrieving results.
-// Requires a running Modal backend to execute.
+// Requires: `modal deploy test_support.py` to deploy the test support app first.
 
-use modal::function::Function;
-use modal::function_call::FunctionCall;
+use modal::client::Client;
+use modal::invocation::NoBlobDownloader;
 
 fn main() {
-    // Function.spawn starts execution asynchronously, returning a function call ID.
-    let function = Function::new("fn-echo-123".to_string(), None);
-    println!("Function ID: {}", function.function_id);
+    println!("Connecting to Modal...");
+    let client = Client::connect().expect("Failed to connect to Modal");
 
-    // With a real client:
-    //   let echo = function_service.from_name("libmodal-test-support", "echo_string", None)?;
-    //   let call_id = echo.spawn(client, &args, &kwargs)?;
+    // Look up the deployed function
+    let echo = client
+        .functions
+        .from_name("libmodal-rs-test-support", "echo_string", None)
+        .expect("Failed to look up function");
+    println!("Function ID: {}", echo.function_id);
 
-    // FunctionCall.from_id wraps a call ID for result retrieval.
-    let fc = FunctionCall {
-        function_call_id: "fc-call-456".to_string(),
-    };
-    println!("Function call ID: {}", fc.function_call_id);
+    // Build arguments: echo_string(s="Hello from spawn!")
+    let args = vec![];
+    let kwargs = ciborium::Value::Map(vec![(
+        ciborium::Value::Text("s".to_string()),
+        ciborium::Value::Text("Hello from spawn!".to_string()),
+    )]);
 
-    // To get results:
-    //   let result = fc.get(ctx, None)?;
-    println!("Function spawn configuration ready.");
+    let transport = client.transport();
+
+    // Spawn the function asynchronously (returns immediately with a call ID)
+    let call_id = echo
+        .spawn(transport.as_ref(), &args, &kwargs)
+        .expect("Failed to spawn function");
+    println!("Spawned function call: {}", call_id);
+
+    // Note: FunctionCall.get() is not yet implemented in the Rust SDK,
+    // so we can't retrieve the spawned result. Demonstrate remote() instead.
+    let result = echo
+        .remote(transport.as_ref(), &NoBlobDownloader, &args, &kwargs)
+        .expect("Failed to call function");
+    println!("Remote result: {:?}", result);
+
+    println!("Done!");
 }

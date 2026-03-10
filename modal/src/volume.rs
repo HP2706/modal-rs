@@ -148,7 +148,7 @@ impl<C: VolumeGrpcClient> VolumeService for VolumeServiceImpl<C> {
         let volume_id = self.client.volume_get_or_create(
             "",
             &env,
-            3, // OBJECT_CREATION_TYPE_EPHEMERAL
+            5, // OBJECT_CREATION_TYPE_EPHEMERAL
         )?;
 
         let notify = Arc::new(tokio::sync::Notify::new());

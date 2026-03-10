@@ -1,40 +1,56 @@
-// Rust equivalent of examples/sandbox-cloud-bucket (Go).
+// Demonstrates creating a cloud bucket mount configuration.
+// Runs against real Modal API.
 //
-// Demonstrates mounting an AWS S3 bucket to a Sandbox.
-// Requires a running Modal backend to execute.
+// Requires:
+// - A Modal Secret named "aws-bucket-secret" with AWS credentials
+//   (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY)
+//
+// Note: The Rust SDK can create cloud bucket mounts and look up secrets,
+// but SandboxCreateParams does not yet support the cloud_bucket_mounts field.
+// This example demonstrates the mount creation and secret lookup.
 
-use modal::cloud_bucket_mount::{new_cloud_bucket_mount, CloudBucketMountParams};
-use modal::secret::Secret;
+use modal::client::Client;
+use modal::cloud_bucket_mount::CloudBucketMountParams;
+use modal::secret::SecretFromNameParams;
 
 fn main() {
-    // S3 bucket access requires a secret with AWS credentials.
-    let secret = Secret {
-        secret_id: "st-aws-secret".to_string(),
-        name: "libmodal-aws-bucket-secret".to_string(),
-    };
+    let bucket_name =
+        std::env::var("S3_BUCKET_NAME").unwrap_or_else(|_| "my-test-bucket".to_string());
+    let secret_name =
+        std::env::var("S3_SECRET_NAME").unwrap_or_else(|_| "aws-bucket-secret".to_string());
 
-    // Create a cloud bucket mount with key prefix and read-only access.
-    let mount = new_cloud_bucket_mount(
-        "my-s3-bucket",
-        Some(&CloudBucketMountParams {
-            secret: Some(secret),
-            key_prefix: Some("data/".to_string()),
-            read_only: true,
-            ..Default::default()
-        }),
-    )
-    .unwrap();
+    println!("Connecting to Modal...");
+    let client = Client::connect().expect("Failed to connect to Modal");
+
+    // Look up the AWS credentials secret
+    let secret = client
+        .secrets
+        .from_name(&secret_name, Some(&SecretFromNameParams::default()))
+        .expect("Failed to find secret — create it with `modal secret create`");
+    println!("Secret: {}", secret.secret_id);
+
+    // Create a cloud bucket mount
+    let mount = client
+        .cloud_bucket_mounts
+        .new_mount(
+            &bucket_name,
+            Some(&CloudBucketMountParams {
+                secret: Some(secret),
+                read_only: true,
+                ..Default::default()
+            }),
+        )
+        .expect("Failed to create cloud bucket mount");
 
     println!("Bucket: {}", mount.bucket_name);
-    println!("Bucket type: {:?}", mount.bucket_type);
     println!("Read only: {}", mount.read_only);
-    println!("Key prefix: {:?}", mount.key_prefix);
-    println!("Secret: {:?}", mount.secret.as_ref().map(|s| &s.name));
 
-    // With a real client:
-    //   let sb = sandbox_service.create(app, image, &SandboxCreateParams {
-    //       command: vec!["sh", "-c", "ls -la /mnt/s3-bucket"],
+    // TODO: Once SandboxCreateParams supports cloud_bucket_mounts:
+    //   let sandbox = client.sandboxes.create(&app_id, &image_id, SandboxCreateParams {
     //       cloud_bucket_mounts: HashMap::from([("/mnt/s3-bucket", mount)]),
+    //       command: vec!["ls", "-la", "/mnt/s3-bucket"],
+    //       ..Default::default()
     //   })?;
-    println!("Cloud bucket mount configuration ready.");
+
+    println!("Done!");
 }

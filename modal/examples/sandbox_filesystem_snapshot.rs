@@ -1,36 +1,97 @@
-// Rust equivalent of examples/sandbox-filesystem-snapshot (Go).
-//
-// Demonstrates creating a filesystem snapshot of a running Sandbox and
-// using it to create a new Sandbox with the same state.
-// Requires a running Modal backend to execute.
+// Demonstrates creating a filesystem snapshot and using it in a new Sandbox.
+// Runs against real Modal API.
 
-use modal::image::Image;
+use modal::app::AppFromNameParams;
+use modal::client::Client;
+use modal::image::ImageBuildParams;
+use modal::sandbox::SandboxCreateParams;
 
 fn main() {
-    let base_image = Image {
-        image_id: String::new(),
-        image_registry_config: None,
-        tag: "alpine:3.21".to_string(),
-        layers: vec![Default::default()],
-    };
-    println!("Base image: {}", base_image.tag);
+    println!("Connecting to Modal...");
+    let client = Client::connect().expect("Failed to connect to Modal");
 
-    // A filesystem snapshot captures the entire sandbox filesystem as an Image.
-    let snapshot = Image::new("im-fs-snapshot-456".to_string());
-    println!("Snapshot image ID: {}", snapshot.image_id);
+    let app = client
+        .apps
+        .from_name(
+            "libmodal-rs-example",
+            Some(&AppFromNameParams {
+                create_if_missing: true,
+                ..Default::default()
+            }),
+        )
+        .expect("Failed to get or create app");
 
-    // With a real client:
-    //   let sb = sandbox_service.create(app, base_image, None)?;
-    //   sb.exec(["mkdir", "-p", "/app/data"], None)?;
-    //   sb.exec(["sh", "-c", "echo 'data' > /app/data/info.txt"], None)?;
-    //
-    //   // Snapshot the entire filesystem (with timeout)
-    //   let snapshot = sb.snapshot_filesystem(Duration::from_secs(55))?;
-    //   sb.terminate(None)?;
-    //
-    //   // Create new sandbox from the snapshot
-    //   let sb2 = sandbox_service.create(app, snapshot, None)?;
-    //   let proc = sb2.exec(["cat", "/app/data/info.txt"], None)?;
-    //   // File contents are preserved from the original sandbox.
-    println!("Filesystem snapshot configuration ready.");
+    let image = client.images.from_registry("alpine:3.21", None);
+    let image = client
+        .images
+        .build(
+            &image,
+            &ImageBuildParams {
+                app_id: app.app_id.clone(),
+                ..Default::default()
+            },
+        )
+        .expect("Failed to build image");
+
+    // Create a sandbox and write some data
+    let sb1 = client
+        .sandboxes
+        .create(
+            &app.app_id,
+            &image.image_id,
+            SandboxCreateParams {
+                command: vec![
+                    "sh".to_string(),
+                    "-c".to_string(),
+                    "mkdir -p /app/data && echo 'snapshot-data' > /app/data/info.txt && sleep 30"
+                        .to_string(),
+                ],
+                timeout_secs: Some(120),
+                ..Default::default()
+            },
+        )
+        .expect("Failed to create sandbox");
+    println!("Sandbox 1: {}", sb1.sandbox_id);
+
+    // Wait a moment for the command to execute
+    std::thread::sleep(std::time::Duration::from_secs(3));
+
+    // Snapshot the filesystem
+    println!("Taking filesystem snapshot...");
+    let snapshot_id = client
+        .sandboxes
+        .snapshot_filesystem(&sb1.sandbox_id, 55.0)
+        .expect("Failed to snapshot filesystem");
+    println!("Snapshot image: {}", snapshot_id);
+
+    let _ = client.sandboxes.terminate(&sb1.sandbox_id);
+
+    // Create a new sandbox from the snapshot — the data should be there
+    let sb2 = client
+        .sandboxes
+        .create(
+            &app.app_id,
+            &snapshot_id,
+            SandboxCreateParams {
+                command: vec!["cat".to_string(), "/app/data/info.txt".to_string()],
+                timeout_secs: Some(60),
+                ..Default::default()
+            },
+        )
+        .expect("Failed to create sandbox from snapshot");
+    println!("Sandbox 2 (from snapshot): {}", sb2.sandbox_id);
+
+    let result = client
+        .sandboxes
+        .wait(&sb2.sandbox_id, 60.0)
+        .expect("Failed to wait");
+    println!(
+        "exit_code={}, success={}",
+        result.exit_code, result.success
+    );
+
+    // Clean up
+    let _ = client.sandboxes.terminate(&sb2.sandbox_id);
+    let _ = client.images.delete(&snapshot_id, None);
+    println!("Done!");
 }

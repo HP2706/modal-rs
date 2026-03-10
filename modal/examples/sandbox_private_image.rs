@@ -1,49 +1,88 @@
-// Rust equivalent of examples/sandbox-private-image (Go).
-//
 // Demonstrates using a private AWS ECR image with credentials from a Secret.
-// Requires a running Modal backend to execute.
+// Runs against real Modal API.
+//
+// Requires:
+// - A Modal Secret named "aws-ecr-secret" with AWS credentials
+// - A private ECR image accessible with those credentials
+//
+// Create the secret:
+//   modal secret create aws-ecr-secret \
+//     AWS_ACCESS_KEY_ID=... AWS_SECRET_ACCESS_KEY=...
 
-use modal::image::{Image, ImageRegistryConfig, RegistryAuthType};
-use modal::secret::Secret;
+use modal::app::AppFromNameParams;
+use modal::client::Client;
+use modal::image::ImageBuildParams;
+use modal::sandbox::SandboxCreateParams;
+use modal::secret::SecretFromNameParams;
 
 fn main() {
-    // AWS ECR requires a Secret with AWS credentials.
-    let secret = Secret {
-        secret_id: "st-ecr-secret".to_string(),
-        name: "libmodal-aws-ecr-test".to_string(),
-    };
+    let ecr_uri = std::env::var("ECR_IMAGE_URI").unwrap_or_else(|_| {
+        "459781239556.dkr.ecr.us-east-1.amazonaws.com/ecr-private-registry-test:python".to_string()
+    });
+    let secret_name =
+        std::env::var("ECR_SECRET_NAME").unwrap_or_else(|_| "aws-ecr-secret".to_string());
 
-    // Image from AWS ECR with registry authentication.
-    let image = Image {
-        image_id: String::new(),
-        image_registry_config: Some(ImageRegistryConfig {
-            registry_auth_type: RegistryAuthType::Aws,
-            secret_id: secret.secret_id.clone(),
-        }),
-        tag: "459781239556.dkr.ecr.us-east-1.amazonaws.com/ecr-private-registry-test:python"
-            .to_string(),
-        layers: vec![Default::default()],
-    };
-    println!("Private ECR image tag: {}", image.tag);
+    println!("Connecting to Modal...");
+    let client = Client::connect().expect("Failed to connect to Modal");
+
+    let app = client
+        .apps
+        .from_name(
+            "libmodal-rs-example",
+            Some(&AppFromNameParams {
+                create_if_missing: true,
+                ..Default::default()
+            }),
+        )
+        .expect("Failed to get or create app");
+
+    // Look up the AWS credentials secret
+    let secret = client
+        .secrets
+        .from_name(&secret_name, Some(&SecretFromNameParams::default()))
+        .expect("Failed to find secret — create it with `modal secret create`");
+
+    // Build image from private ECR
+    let image = client.images.from_aws_ecr(&ecr_uri, &secret);
+    let image = client
+        .images
+        .build(
+            &image,
+            &ImageBuildParams {
+                app_id: app.app_id.clone(),
+                ..Default::default()
+            },
+        )
+        .expect("Failed to build private image");
+    println!("Image: {}", image.image_id);
+
+    // Create sandbox from the private image
+    let sandbox = client
+        .sandboxes
+        .create(
+            &app.app_id,
+            &image.image_id,
+            SandboxCreateParams {
+                command: vec![
+                    "sh".to_string(),
+                    "-c".to_string(),
+                    "echo 'Running from private ECR image'".to_string(),
+                ],
+                timeout_secs: Some(60),
+                ..Default::default()
+            },
+        )
+        .expect("Failed to create sandbox");
+
+    let result = client
+        .sandboxes
+        .wait(&sandbox.sandbox_id, 60.0)
+        .expect("Failed to wait");
     println!(
-        "Auth type: {:?}",
-        image.image_registry_config.as_ref().unwrap().registry_auth_type
+        "exit_code={}, success={}",
+        result.exit_code, result.success
     );
 
-    // GCP Artifact Registry uses RegistryAuthType::Gcp instead.
-    let gcp_image = Image {
-        image_id: String::new(),
-        image_registry_config: Some(ImageRegistryConfig {
-            registry_auth_type: RegistryAuthType::Gcp,
-            secret_id: "st-gcp-secret".to_string(),
-        }),
-        tag: "us-docker.pkg.dev/project/repo/image:latest".to_string(),
-        layers: vec![Default::default()],
-    };
-    println!("GCP image auth: {:?}", gcp_image.image_registry_config.as_ref().unwrap().registry_auth_type);
-
-    // With a real client:
-    //   let image = image_service.from_aws_ecr(tag, &secret);
-    //   let sb = sandbox_service.create(app, image, &params)?;
-    println!("Private image configuration ready.");
+    let _ = client.sandboxes.terminate(&sandbox.sandbox_id);
+    println!("Done!");
 }

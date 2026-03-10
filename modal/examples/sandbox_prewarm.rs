@@ -1,44 +1,77 @@
-// Rust equivalent of examples/sandbox-prewarm (Go).
-//
-// Demonstrates pre-building and warming an image using Build() to speed up
-// subsequent Sandbox creation.
-// Requires a running Modal backend to execute.
+// Demonstrates pre-building an image to speed up sandbox creation.
+// Runs against real Modal API.
 
-use modal::image::{Image, ImageBuildParams, ImageBuildResult, ImageBuildStatus};
+use modal::app::AppFromNameParams;
+use modal::client::Client;
+use modal::image::ImageBuildParams;
+use modal::sandbox::SandboxCreateParams;
 
 fn main() {
-    // An image starts without an ID; Build() creates it on Modal.
-    let image = Image {
-        image_id: String::new(),
-        image_registry_config: None,
-        tag: "alpine:3.21".to_string(),
-        layers: vec![Default::default()],
-    };
-    println!("Image tag: {}", image.tag);
-    println!("Image has ID before build: '{}'", image.image_id);
+    println!("Connecting to Modal...");
+    let client = Client::connect().expect("Failed to connect to Modal");
 
-    // Build parameters reference the App and builder version.
-    let build_params = ImageBuildParams {
-        app_id: "ap-example".to_string(),
-        builder_version: "2024.10".to_string(),
-    };
-    println!("Build params - app: {}, builder: {}", build_params.app_id, build_params.builder_version);
+    let app = client
+        .apps
+        .from_name(
+            "libmodal-rs-example",
+            Some(&AppFromNameParams {
+                create_if_missing: true,
+                ..Default::default()
+            }),
+        )
+        .expect("Failed to get or create app");
 
-    // After building, the image has an ID that can be saved for later use.
-    let build_result = ImageBuildResult {
-        image_id: "im-built-123".to_string(),
-        status: ImageBuildStatus::Success,
-        exception: None,
-    };
-    println!("Build status: {:?}, ID: {}", build_result.status, build_result.image_id);
+    // Pre-build the image (this caches it on Modal)
+    let base = client.images.from_registry("alpine:3.21", None);
+    let image = base.dockerfile_commands(
+        &["RUN apk add --no-cache curl jq".to_string()],
+        None,
+    );
 
-    // Use Image.new() to reference a previously built image by ID.
-    let from_id = Image::new(build_result.image_id.clone());
+    println!("Building image (first time may be slow)...");
+    let built = client
+        .images
+        .build(
+            &image,
+            &ImageBuildParams {
+                app_id: app.app_id.clone(),
+                ..Default::default()
+            },
+        )
+        .expect("Failed to build image");
+    println!("Image built: {}", built.image_id);
+
+    // Reference the pre-built image by ID (instant, no rebuild)
+    let from_id = client
+        .images
+        .from_id(&built.image_id)
+        .expect("Failed to get image by ID");
     println!("Image from ID: {}", from_id.image_id);
 
-    // With a real client:
-    //   let built = image_service.build(&image, &build_params)?;
-    //   let from_id = image_service.from_id(&built.image_id)?;
-    //   let sb = sandbox_service.create(app, from_id, &params)?;
-    println!("Prewarm configuration ready.");
+    // Create sandbox using the pre-warmed image
+    let sandbox = client
+        .sandboxes
+        .create(
+            &app.app_id,
+            &from_id.image_id,
+            SandboxCreateParams {
+                command: vec![
+                    "sh".to_string(),
+                    "-c".to_string(),
+                    "curl --version | head -1 && jq --version".to_string(),
+                ],
+                timeout_secs: Some(60),
+                ..Default::default()
+            },
+        )
+        .expect("Failed to create sandbox");
+
+    let result = client
+        .sandboxes
+        .wait(&sandbox.sandbox_id, 60.0)
+        .expect("Failed to wait");
+    println!("exit_code={}, success={}", result.exit_code, result.success);
+
+    let _ = client.sandboxes.terminate(&sandbox.sandbox_id);
+    println!("Done!");
 }

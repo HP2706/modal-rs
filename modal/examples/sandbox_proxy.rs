@@ -1,30 +1,40 @@
-// Rust equivalent of examples/sandbox-proxy (Go).
+// Demonstrates looking up a Modal Proxy by name.
+// Runs against real Modal API.
 //
-// Demonstrates creating a Sandbox with a configured Proxy for network requests.
-// Requires a running Modal backend to execute.
+// Requires:
+// - A pre-configured Modal Proxy (set up via Modal dashboard)
+//
+// Note: The Rust SDK can look up proxies via from_name() but SandboxCreateParams
+// does not yet support the proxy field. This example demonstrates the lookup.
 
-use modal::proxy::{Proxy, ProxyFromNameParams};
+use modal::client::Client;
+use modal::proxy::ProxyFromNameParams;
 
 fn main() {
-    // Look up a proxy by name.
-    let params = ProxyFromNameParams {
-        environment: "libmodal".to_string(),
-    };
-    println!("Proxy lookup - environment: '{}'", params.environment);
+    let proxy_name =
+        std::env::var("PROXY_NAME").unwrap_or_else(|_| "libmodal-test-proxy".to_string());
 
-    // A Proxy is resolved via ProxyService.from_name.
-    let proxy = Proxy {
-        proxy_id: "pr-proxy-123".to_string(),
-    };
+    println!("Connecting to Modal...");
+    let client = Client::connect().expect("Failed to connect to Modal");
+
+    // Look up the proxy
+    let proxy = client
+        .proxies
+        .from_name(
+            &proxy_name,
+            Some(&ProxyFromNameParams {
+                environment: String::new(),
+            }),
+        )
+        .expect("Failed to find proxy");
     println!("Proxy ID: {}", proxy.proxy_id);
 
-    // With a real client:
-    //   let proxy = proxy_service.from_name("libmodal-test-proxy", Some(&params))?;
-    //   let sb = sandbox_service.create(app, image, &SandboxCreateParams {
+    // TODO: Once SandboxCreateParams supports proxy:
+    //   let sandbox = client.sandboxes.create(&app_id, &image_id, SandboxCreateParams {
     //       proxy: Some(proxy),
+    //       command: vec!["wget", "-qO-", "ifconfig.me"],
     //       ..Default::default()
     //   })?;
-    //   let p = sb.exec(["curl", "-s", "ifconfig.me"], None)?;
-    //   let ip = p.stdout.read_to_string()?;
-    println!("Proxy-enabled sandbox configuration ready.");
+
+    println!("Done!");
 }
