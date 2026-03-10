@@ -1,5 +1,34 @@
 # Modal Rust SDK Progress
 
+## 2026-03-10 — Client integration tests (F033)
+
+### What was done
+Added the last missing Go test file equivalent: `client_test.rs` integration tests matching `client_test.go`:
+
+1. **`client_test.rs`** (`modal/tests/client_test.rs`): 8 mock-based integration tests:
+   - `test_client_initialization`: Client creation and version accessibility (mirrors Go's TestClientWithLogger)
+   - `test_client_stores_profile`: Profile correctly stored and accessible
+   - `test_client_all_service_accessors`: All 11 services functional (mirrors Go's TestClientWithCustomInterceptors)
+   - `test_client_builder_missing_required_services`: Error on missing services
+   - `test_client_custom_sdk_version`: Custom version propagation
+   - `test_client_debug_representation`: Debug output includes type and profile
+   - `test_multiple_independent_clients`: Two clients with different profiles coexist
+   - `test_client_params_default`: ClientParams default values
+
+### Test counts
+- Before: 455 unit tests + 179 integration tests
+- After: 455 unit tests + 187 integration tests (8 new)
+- All passing, zero compiler warnings
+
+### What's next
+- **The Modal Rust SDK is fully feature-complete with all Go test files having Rust equivalents.**
+- All 33 features (F001-F033) are done.
+- Remaining potential improvements:
+  - Live API integration testing (requires credentials and network access)
+  - gRPC interceptor chain (auth token, retry, timeout) in transport layer
+
+---
+
 ## 2026-03-10 — gRPC transport layer (F032)
 
 ### What was done

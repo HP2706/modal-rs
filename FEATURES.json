@@ -309,6 +309,16 @@
       "priority": "high",
       "status": "done",
       "notes": "Real gRPC transport layer connecting SDK to Modal API. ModalGrpcTransport struct wrapping tonic ModalClientClient<Channel> with TLS support. All 13 *GrpcClient trait implementations. Arc delegation for shared transport. Client::connect() and connect_with_options() constructors wiring all 11 services. 7 unit tests. Complete."
+    },
+    {
+      "id": "F033",
+      "name": "Client integration tests",
+      "module": "tests",
+      "category": "test",
+      "go_reference": "libmodal/modal-go/client_test.go",
+      "priority": "medium",
+      "status": "done",
+      "notes": "8 mock-based integration tests in client_test.rs covering client initialization, profile storage, all 11 service accessors, builder error handling, custom SDK version, debug representation, multiple independent clients, and ClientParams defaults. Equivalent to Go's client_test.go patterns. Complete."
     }
   ]
 }
