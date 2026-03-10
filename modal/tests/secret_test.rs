@@ -6,7 +6,8 @@ mod common;
 /// Translated from libmodal/modal-go/test/secret_test.go
 
 use modal::secret::{
-    merge_env_into_secrets, Secret, SecretFromMapParams, SecretService,
+    merge_env_into_secrets, Secret, SecretDeleteParams, SecretFromMapParams, SecretFromNameParams,
+    SecretService,
 };
 use std::collections::HashMap;
 
@@ -16,6 +17,23 @@ struct MockSecretService {
 }
 
 impl SecretService for MockSecretService {
+    fn from_name(
+        &self,
+        name: &str,
+        _params: Option<&SecretFromNameParams>,
+    ) -> Result<Secret, modal::ModalError> {
+        if name == "missing-secret" {
+            return Err(modal::ModalError::NotFound(format!(
+                "Secret '{}' not found",
+                name
+            )));
+        }
+        Ok(Secret {
+            secret_id: self.secret_id.clone(),
+            name: name.to_string(),
+        })
+    }
+
     fn from_map(
         &self,
         _key_value_pairs: &HashMap<String, String>,
@@ -26,17 +44,63 @@ impl SecretService for MockSecretService {
             name: String::new(),
         })
     }
+
+    fn delete(
+        &self,
+        name: &str,
+        params: Option<&SecretDeleteParams>,
+    ) -> Result<(), modal::ModalError> {
+        let result = self.from_name(name, None);
+        match result {
+            Ok(_) => Ok(()),
+            Err(e) => {
+                if let Some(p) = params {
+                    if p.allow_missing && matches!(e, modal::ModalError::NotFound(_)) {
+                        return Ok(());
+                    }
+                }
+                Err(e)
+            }
+        }
+    }
 }
 
 #[test]
 fn test_secret_from_name() {
-    // Test creating a Secret struct and verifying its fields
-    let secret = Secret {
+    let mock = MockSecretService {
         secret_id: "st-test-123".to_string(),
-        name: "my-secret".to_string(),
     };
+    let secret = mock.from_name("my-secret", None).unwrap();
     assert_eq!(secret.secret_id, "st-test-123");
     assert_eq!(secret.name, "my-secret");
+}
+
+#[test]
+fn test_secret_from_name_not_found() {
+    let mock = MockSecretService {
+        secret_id: "st-test-123".to_string(),
+    };
+    let err = mock.from_name("missing-secret", None).unwrap_err();
+    assert!(err
+        .to_string()
+        .contains("Secret 'missing-secret' not found"));
+}
+
+#[test]
+fn test_secret_from_name_with_required_keys() {
+    let mock = MockSecretService {
+        secret_id: "st-keys-456".to_string(),
+    };
+    let secret = mock
+        .from_name(
+            "my-secret",
+            Some(&SecretFromNameParams {
+                required_keys: vec!["a".into(), "b".into(), "c".into()],
+                ..Default::default()
+            }),
+        )
+        .unwrap();
+    assert_eq!(secret.secret_id, "st-keys-456");
 }
 
 #[test]
@@ -67,6 +131,46 @@ fn test_secret_from_map_with_params() {
 
     let secret = mock.from_map(&env, Some(&params)).unwrap();
     assert_eq!(secret.secret_id, "st-env-789");
+}
+
+#[test]
+fn test_secret_delete_success() {
+    let mock = MockSecretService {
+        secret_id: "st-test-123".to_string(),
+    };
+    mock.delete("my-secret", None).unwrap();
+}
+
+#[test]
+fn test_secret_delete_with_allow_missing() {
+    let mock = MockSecretService {
+        secret_id: "st-test-123".to_string(),
+    };
+    mock.delete(
+        "missing-secret",
+        Some(&SecretDeleteParams {
+            allow_missing: true,
+            ..Default::default()
+        }),
+    )
+    .unwrap();
+}
+
+#[test]
+fn test_secret_delete_with_allow_missing_false_throws() {
+    let mock = MockSecretService {
+        secret_id: "st-test-123".to_string(),
+    };
+    let err = mock
+        .delete(
+            "missing-secret",
+            Some(&SecretDeleteParams {
+                allow_missing: false,
+                ..Default::default()
+            }),
+        )
+        .unwrap_err();
+    assert!(matches!(err, modal::ModalError::NotFound(_)));
 }
 
 #[test]

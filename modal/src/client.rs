@@ -374,6 +374,16 @@ mod tests {
 
     struct MockSecretService;
     impl SecretService for MockSecretService {
+        fn from_name(
+            &self,
+            name: &str,
+            _: Option<&crate::secret::SecretFromNameParams>,
+        ) -> Result<Secret, ModalError> {
+            Ok(Secret {
+                secret_id: "se-mock".to_string(),
+                name: name.to_string(),
+            })
+        }
         fn from_map(
             &self,
             _: &std::collections::HashMap<String, String>,
@@ -383,6 +393,13 @@ mod tests {
                 secret_id: "se-mock".to_string(),
                 name: String::new(),
             })
+        }
+        fn delete(
+            &self,
+            _: &str,
+            _: Option<&crate::secret::SecretDeleteParams>,
+        ) -> Result<(), ModalError> {
+            Ok(())
         }
     }
 
