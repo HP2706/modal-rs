@@ -269,9 +269,11 @@ mod tests {
         assert!(!p.is_localhost());
     }
 
+    // All Profile::from_config tests are combined into one test to avoid
+    // env var race conditions when tests run in parallel.
     #[test]
-    fn test_profile_from_config_uses_env_vars() {
-        // Point config to a nonexistent file so it falls through to env vars
+    fn test_profile_from_config() {
+        // --- Part 1: env var resolution ---
         unsafe {
             env::set_var("MODAL_CONFIG_PATH", "/tmp/nonexistent_modal_test.toml");
             env::set_var("MODAL_TOKEN_ID", "ak-test123");
@@ -286,24 +288,7 @@ mod tests {
         assert_eq!(profile.environment, "test-env");
         assert_eq!(profile.server_url, "https://api.modal.com:443");
 
-        unsafe {
-            env::remove_var("MODAL_TOKEN_ID");
-            env::remove_var("MODAL_TOKEN_SECRET");
-            env::remove_var("MODAL_ENVIRONMENT");
-            env::remove_var("MODAL_CONFIG_PATH");
-        }
-    }
-
-    #[test]
-    fn test_profile_from_config_with_overrides() {
-        unsafe {
-            env::set_var("MODAL_CONFIG_PATH", "/tmp/nonexistent_modal_test.toml");
-            env::set_var("MODAL_TOKEN_ID", "ak-from-env");
-            env::set_var("MODAL_TOKEN_SECRET", "as-from-env");
-            env::remove_var("MODAL_PROFILE");
-            env::remove_var("MODAL_ENVIRONMENT");
-        }
-
+        // --- Part 2: overrides replace env values ---
         let params = ClientParams {
             token_id: "ak-override".to_string(),
             token_secret: "as-override".to_string(),
@@ -314,38 +299,13 @@ mod tests {
         assert_eq!(profile.token_secret, "as-override");
         assert_eq!(profile.environment, "override-env");
 
-        unsafe {
-            env::remove_var("MODAL_TOKEN_ID");
-            env::remove_var("MODAL_TOKEN_SECRET");
-            env::remove_var("MODAL_CONFIG_PATH");
-        }
-    }
-
-    #[test]
-    fn test_profile_from_config_with_empty_overrides_keeps_env() {
-        unsafe {
-            env::set_var("MODAL_CONFIG_PATH", "/tmp/nonexistent_modal_test.toml");
-            env::set_var("MODAL_TOKEN_ID", "ak-from-env");
-            env::set_var("MODAL_TOKEN_SECRET", "as-from-env");
-            env::remove_var("MODAL_PROFILE");
-            env::remove_var("MODAL_ENVIRONMENT");
-        }
-
-        // Empty overrides should not replace env-resolved values
+        // --- Part 3: empty overrides keep env values ---
         let params = ClientParams::default();
         let profile = Profile::from_config_with_overrides(Some(&params)).unwrap();
-        assert_eq!(profile.token_id, "ak-from-env");
-        assert_eq!(profile.token_secret, "as-from-env");
+        assert_eq!(profile.token_id, "ak-test123");
+        assert_eq!(profile.token_secret, "as-secret456");
 
-        unsafe {
-            env::remove_var("MODAL_TOKEN_ID");
-            env::remove_var("MODAL_TOKEN_SECRET");
-            env::remove_var("MODAL_CONFIG_PATH");
-        }
-    }
-
-    #[test]
-    fn test_profile_from_config_reads_toml_file() {
+        // --- Part 4: TOML file reading ---
         let tmp = std::env::temp_dir().join("modal_test_config.toml");
         std::fs::write(
             &tmp,
@@ -365,6 +325,7 @@ active = true
             env::remove_var("MODAL_TOKEN_SECRET");
             env::remove_var("MODAL_SERVER_URL");
             env::remove_var("MODAL_PROFILE");
+            env::remove_var("MODAL_ENVIRONMENT");
         }
 
         let profile = Profile::from_config().unwrap();
@@ -376,10 +337,8 @@ active = true
             env::remove_var("MODAL_CONFIG_PATH");
         }
         let _ = std::fs::remove_file(&tmp);
-    }
 
-    #[test]
-    fn test_client_params_default() {
+        // --- Part 5: ClientParams default ---
         let params = ClientParams::default();
         assert!(params.token_id.is_empty());
         assert!(params.token_secret.is_empty());
