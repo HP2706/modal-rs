@@ -2,6 +2,8 @@ use crate::app::AppService;
 use crate::cloud_bucket_mount::{CloudBucketMountService, CloudBucketMountServiceImpl};
 use crate::cls::ClsService;
 use crate::config::Profile;
+// Re-export ClientParams from config so existing imports from client::ClientParams still work.
+pub use crate::config::ClientParams;
 use crate::function::FunctionService;
 use crate::function_call::FunctionCallService;
 use crate::image::ImageService;
@@ -183,14 +185,6 @@ impl Client {
     pub fn version(&self) -> &str {
         &self.sdk_version
     }
-}
-
-/// ClientParams defines credentials and options for initializing the Modal client.
-#[derive(Debug, Clone, Default)]
-pub struct ClientParams {
-    pub token_id: String,
-    pub token_secret: String,
-    pub environment: String,
 }
 
 #[cfg(test)]

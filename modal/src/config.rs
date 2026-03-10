@@ -149,6 +149,51 @@ fn first_non_empty(values: &[&str]) -> String {
     String::new()
 }
 
+impl Profile {
+    /// Resolve a Profile from environment variables and the config file (~/.modal.toml).
+    /// Matches Go SDK's config resolution in `NewClient()`.
+    ///
+    /// Resolution order for each field:
+    /// 1. Environment variables (MODAL_TOKEN_ID, MODAL_TOKEN_SECRET, etc.)
+    /// 2. Active profile from config file
+    /// 3. Built-in defaults
+    pub fn from_config() -> Result<Self, ModalError> {
+        Self::from_config_with_overrides(None)
+    }
+
+    /// Resolve a Profile from environment variables and the config file, then apply
+    /// any overrides from the given `ClientParams`.
+    /// Matches Go SDK's `NewClientWithOptions()`.
+    pub fn from_config_with_overrides(params: Option<&ClientParams>) -> Result<Self, ModalError> {
+        let cfg = read_config_file()?;
+        let profile_name = env::var("MODAL_PROFILE").unwrap_or_default();
+        let mut profile = get_profile(&profile_name, &cfg);
+
+        if let Some(p) = params {
+            if !p.token_id.is_empty() {
+                profile.token_id = p.token_id.clone();
+            }
+            if !p.token_secret.is_empty() {
+                profile.token_secret = p.token_secret.clone();
+            }
+            if !p.environment.is_empty() {
+                profile.environment = p.environment.clone();
+            }
+        }
+
+        Ok(profile)
+    }
+}
+
+/// ClientParams defines credentials and options for initializing the Modal client.
+/// Matches Go SDK's `ClientParams` struct.
+#[derive(Debug, Clone, Default)]
+pub struct ClientParams {
+    pub token_id: String,
+    pub token_secret: String,
+    pub environment: String,
+}
+
 pub fn environment_name(environment: &str, profile: &Profile) -> String {
     first_non_empty(&[environment, &profile.environment])
 }
@@ -222,5 +267,122 @@ mod tests {
             ..Default::default()
         };
         assert!(!p.is_localhost());
+    }
+
+    #[test]
+    fn test_profile_from_config_uses_env_vars() {
+        // Point config to a nonexistent file so it falls through to env vars
+        unsafe {
+            env::set_var("MODAL_CONFIG_PATH", "/tmp/nonexistent_modal_test.toml");
+            env::set_var("MODAL_TOKEN_ID", "ak-test123");
+            env::set_var("MODAL_TOKEN_SECRET", "as-secret456");
+            env::set_var("MODAL_ENVIRONMENT", "test-env");
+            env::remove_var("MODAL_PROFILE");
+        }
+
+        let profile = Profile::from_config().unwrap();
+        assert_eq!(profile.token_id, "ak-test123");
+        assert_eq!(profile.token_secret, "as-secret456");
+        assert_eq!(profile.environment, "test-env");
+        assert_eq!(profile.server_url, "https://api.modal.com:443");
+
+        unsafe {
+            env::remove_var("MODAL_TOKEN_ID");
+            env::remove_var("MODAL_TOKEN_SECRET");
+            env::remove_var("MODAL_ENVIRONMENT");
+            env::remove_var("MODAL_CONFIG_PATH");
+        }
+    }
+
+    #[test]
+    fn test_profile_from_config_with_overrides() {
+        unsafe {
+            env::set_var("MODAL_CONFIG_PATH", "/tmp/nonexistent_modal_test.toml");
+            env::set_var("MODAL_TOKEN_ID", "ak-from-env");
+            env::set_var("MODAL_TOKEN_SECRET", "as-from-env");
+            env::remove_var("MODAL_PROFILE");
+            env::remove_var("MODAL_ENVIRONMENT");
+        }
+
+        let params = ClientParams {
+            token_id: "ak-override".to_string(),
+            token_secret: "as-override".to_string(),
+            environment: "override-env".to_string(),
+        };
+        let profile = Profile::from_config_with_overrides(Some(&params)).unwrap();
+        assert_eq!(profile.token_id, "ak-override");
+        assert_eq!(profile.token_secret, "as-override");
+        assert_eq!(profile.environment, "override-env");
+
+        unsafe {
+            env::remove_var("MODAL_TOKEN_ID");
+            env::remove_var("MODAL_TOKEN_SECRET");
+            env::remove_var("MODAL_CONFIG_PATH");
+        }
+    }
+
+    #[test]
+    fn test_profile_from_config_with_empty_overrides_keeps_env() {
+        unsafe {
+            env::set_var("MODAL_CONFIG_PATH", "/tmp/nonexistent_modal_test.toml");
+            env::set_var("MODAL_TOKEN_ID", "ak-from-env");
+            env::set_var("MODAL_TOKEN_SECRET", "as-from-env");
+            env::remove_var("MODAL_PROFILE");
+            env::remove_var("MODAL_ENVIRONMENT");
+        }
+
+        // Empty overrides should not replace env-resolved values
+        let params = ClientParams::default();
+        let profile = Profile::from_config_with_overrides(Some(&params)).unwrap();
+        assert_eq!(profile.token_id, "ak-from-env");
+        assert_eq!(profile.token_secret, "as-from-env");
+
+        unsafe {
+            env::remove_var("MODAL_TOKEN_ID");
+            env::remove_var("MODAL_TOKEN_SECRET");
+            env::remove_var("MODAL_CONFIG_PATH");
+        }
+    }
+
+    #[test]
+    fn test_profile_from_config_reads_toml_file() {
+        let tmp = std::env::temp_dir().join("modal_test_config.toml");
+        std::fs::write(
+            &tmp,
+            r#"
+[myprofile]
+token_id = "ak-from-toml"
+token_secret = "as-from-toml"
+server_url = "https://custom.modal.com:443"
+active = true
+"#,
+        )
+        .unwrap();
+
+        unsafe {
+            env::set_var("MODAL_CONFIG_PATH", tmp.to_str().unwrap());
+            env::remove_var("MODAL_TOKEN_ID");
+            env::remove_var("MODAL_TOKEN_SECRET");
+            env::remove_var("MODAL_SERVER_URL");
+            env::remove_var("MODAL_PROFILE");
+        }
+
+        let profile = Profile::from_config().unwrap();
+        assert_eq!(profile.token_id, "ak-from-toml");
+        assert_eq!(profile.token_secret, "as-from-toml");
+        assert_eq!(profile.server_url, "https://custom.modal.com:443");
+
+        unsafe {
+            env::remove_var("MODAL_CONFIG_PATH");
+        }
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[test]
+    fn test_client_params_default() {
+        let params = ClientParams::default();
+        assert!(params.token_id.is_empty());
+        assert!(params.token_secret.is_empty());
+        assert!(params.environment.is_empty());
     }
 }
