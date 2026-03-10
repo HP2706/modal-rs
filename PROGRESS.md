@@ -1,5 +1,31 @@
 # Modal Rust SDK Progress
 
+## 2026-03-09 — SecretService from_name() and delete() methods
+
+### What was done
+Added the missing `from_name()` and `delete()` methods to SecretService, matching the Go SDK (F030):
+
+1. **SecretGrpcClient trait** (`secret.rs`): Abstracts `secret_get_or_create` and `secret_delete` gRPC calls for testability.
+2. **SecretServiceImpl** (`secret.rs`): Full implementation backed by SecretGrpcClient:
+   - `from_name()`: Look up a Secret by name with environment and required_keys support, NotFound error mapping
+   - `from_map()`: Create ephemeral Secret from key-value pairs (refactored to use SecretGrpcClient)
+   - `delete()`: Delete a named Secret with allow_missing support (handles NotFound from both from_name and delete RPC)
+3. **Client mock update** (`client.rs`): Updated MockSecretService to implement all 3 trait methods.
+4. **Integration tests** (`secret_test.rs`): Expanded from 6 to 11 tests covering from_name, from_name_not_found, from_name_with_required_keys, delete_success, delete_allow_missing, delete_allow_missing_false_throws.
+
+### Test counts
+- Before: 435 unit tests + 174 integration tests
+- After: 446 unit tests + 179 integration tests (11 new unit + 5 new integration)
+- All passing
+
+### What's next
+- **The Modal Rust SDK is fully feature-complete with all Go SDK methods implemented.**
+- Only remaining low-priority items:
+  - client_test.go equivalent (requires real gRPC connections, not suitable for mock tests)
+  - Config functions cleanup (read_config_file, get_profile are currently unused)
+
+---
+
 ## 2026-03-09 — Client service accessors and missing service traits
 
 ### What was done

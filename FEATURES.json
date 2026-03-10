@@ -279,6 +279,16 @@
       "priority": "high",
       "status": "done",
       "notes": "Added AppService, ClsService, CloudBucketMountService traits. Rewrote Client struct with 11 service accessors (Box<dyn Trait>) matching Go SDK. Added ClientBuilder for construction. 12 new tests. Complete."
+    },
+    {
+      "id": "F030",
+      "name": "SecretService from_name and delete methods",
+      "module": "secret",
+      "category": "source",
+      "go_reference": "libmodal/modal-go/secret.go",
+      "priority": "high",
+      "status": "done",
+      "notes": "Added SecretGrpcClient trait, SecretServiceImpl with from_name/from_map/delete. NotFound error mapping, allow_missing support for delete. 11 new unit tests, 5 new integration tests. Complete."
     }
   ]
 }
