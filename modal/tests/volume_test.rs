@@ -18,6 +18,7 @@ struct MockVolumeClient {
 
 enum MockResp {
     GetOrCreate(Result<String, ModalError>),
+    #[allow(dead_code)]
     Delete(Result<(), ModalError>),
 }
 
@@ -32,6 +33,7 @@ impl MockVolumeClient {
         self.responses.lock().unwrap().push(MockResp::GetOrCreate(r));
     }
 
+    #[allow(dead_code)]
     fn push_delete(&self, r: Result<(), ModalError>) {
         self.responses.lock().unwrap().push(MockResp::Delete(r));
     }

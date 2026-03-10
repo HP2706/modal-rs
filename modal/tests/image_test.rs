@@ -7,7 +7,7 @@ mod common;
 
 use modal::error::ModalError;
 use modal::image::{
-    validate_dockerfile_commands, Image, ImageBuildParams, ImageBuildResult, ImageBuildStatus,
+    validate_dockerfile_commands, ImageBuildParams, ImageBuildResult, ImageBuildStatus,
     ImageDockerfileCommandsParams, ImageFromRegistryParams, ImageGrpcClient,
     ImageJoinStreamingResult, ImageLayerBuildRequest, ImageService, ImageServiceImpl,
     RegistryAuthType,

@@ -3,7 +3,7 @@
 /// Integration tests for Modal App module.
 /// Translated from libmodal/modal-go/app_test.go
 
-use modal::app::{parse_gpu_config, GpuConfig};
+use modal::app::parse_gpu_config;
 
 #[test]
 fn test_parse_gpu_config_empty() {

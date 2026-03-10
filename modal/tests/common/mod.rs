@@ -1,6 +1,7 @@
 /// Common test utilities for integration tests.
 
 /// Check if integration test credentials are available.
+#[allow(dead_code)]
 pub fn has_credentials() -> bool {
     std::env::var("MODAL_TOKEN_ID").is_ok() && std::env::var("MODAL_TOKEN_SECRET").is_ok()
 }
