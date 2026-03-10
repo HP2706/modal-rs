@@ -33,6 +33,8 @@ pub struct Client {
     pub sandboxes: Box<dyn SandboxService>,
     pub secrets: Box<dyn SecretService>,
     pub volumes: Box<dyn VolumeService>,
+    /// The gRPC transport (implements InvocationGrpcClient for function calls).
+    transport: Option<Arc<ModalGrpcTransport>>,
 }
 
 impl std::fmt::Debug for Client {
@@ -180,6 +182,7 @@ impl ClientBuilder {
             volumes: self.volumes.ok_or_else(|| {
                 crate::error::ModalError::Other("volumes service not configured".to_string())
             })?,
+            transport: None,
         })
     }
 }
@@ -188,6 +191,13 @@ impl Client {
     /// Returns the SDK version.
     pub fn version(&self) -> &str {
         &self.sdk_version
+    }
+
+    /// Returns the gRPC transport, which implements InvocationGrpcClient.
+    /// Used for calling Function.remote() and Function.spawn().
+    /// Panics if the client was built with mock services (no transport).
+    pub fn transport(&self) -> &Arc<ModalGrpcTransport> {
+        self.transport.as_ref().expect("transport not available (mock client?)")
     }
 
     /// Create a new Client connected to the Modal API.
@@ -228,6 +238,7 @@ impl Client {
             sandboxes: Box::new(SandboxServiceImpl { client: Arc::clone(&transport) }),
             secrets: Box::new(SecretServiceImpl { client: Arc::clone(&transport), profile: profile.clone() }),
             volumes: Box::new(VolumeServiceImpl { client: Arc::clone(&transport), profile }),
+            transport: Some(transport),
         })
     }
 }

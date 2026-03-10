@@ -49,6 +49,10 @@ pub struct ModalGrpcTransport {
     client: Mutex<InterceptedClient>,
     retry_config: GrpcRetryConfig,
     runtime: tokio::runtime::Handle,
+    /// Owned runtime, kept alive for the lifetime of the transport.
+    /// When the transport is used from within an existing tokio runtime (e.g. tests),
+    /// this is None and we use the existing runtime handle.
+    _owned_runtime: Option<tokio::runtime::Runtime>,
 }
 
 impl ModalGrpcTransport {
@@ -57,21 +61,21 @@ impl ModalGrpcTransport {
     /// Creates a TLS-enabled gRPC channel for HTTPS URLs or an insecure
     /// channel for HTTP URLs (e.g. localhost testing). Installs the
     /// `ModalInterceptor` for automatic header injection on every request.
+    ///
+    /// Can be called from any context — creates its own dedicated tokio runtime
+    /// for gRPC I/O so that callers never hit nested block_on panics.
     pub fn connect(profile: &Profile, sdk_version: &str) -> Result<Self, ModalError> {
-        let runtime = tokio::runtime::Handle::try_current().map_err(|_| {
-            ModalError::Other(
-                "ModalGrpcTransport::connect must be called from within a tokio runtime"
-                    .to_string(),
-            )
+        let runtime = tokio::runtime::Runtime::new().map_err(|e| {
+            ModalError::Other(format!("failed to create tokio runtime: {}", e))
         })?;
-
         let channel = runtime.block_on(Self::create_channel(profile))?;
         let client = Self::create_client(channel, profile, sdk_version)?;
-
+        let handle = runtime.handle().clone();
         Ok(Self {
             client: Mutex::new(client),
             retry_config: GrpcRetryConfig::default(),
-            runtime,
+            runtime: handle,
+            _owned_runtime: Some(runtime),
         })
     }
 
@@ -888,8 +892,174 @@ impl crate::sandbox::SandboxGrpcClient for ModalGrpcTransport {
         image_id: &str,
         params: &SandboxCreateParams,
     ) -> Result<String, ModalError> {
+        let pty_info = if params.pty {
+            Some(pb::PtyInfo {
+                enabled: true,
+                winsz_rows: 24,
+                winsz_cols: 80,
+                env_term: "xterm-256color".to_string(),
+                env_colorterm: "truecolor".to_string(),
+                pty_type: 0, // SHELL
+                ..Default::default()
+            })
+        } else {
+            None
+        };
+
+        let timeout_secs = params.timeout_secs.unwrap_or(300);
+
+        // Network access configuration
+        let network_access = if params.block_network {
+            Some(pb::NetworkAccess {
+                network_access_type: 2, // BLOCKED
+                allowed_cidrs: vec![],
+            })
+        } else if !params.cidr_allowlist.is_empty() {
+            Some(pb::NetworkAccess {
+                network_access_type: 3, // ALLOWLIST
+                allowed_cidrs: params.cidr_allowlist.clone(),
+            })
+        } else {
+            Some(pb::NetworkAccess {
+                network_access_type: 1, // OPEN
+                allowed_cidrs: vec![],
+            })
+        };
+
+        // Volume mounts
+        let volume_mounts: Vec<pb::VolumeMount> = params
+            .volumes
+            .iter()
+            .map(|(mount_path, volume)| pb::VolumeMount {
+                volume_id: volume.volume_id.clone(),
+                mount_path: mount_path.clone(),
+                allow_background_commits: true,
+                read_only: volume.is_read_only(),
+            })
+            .collect();
+
+        // Secret IDs
+        let secret_ids: Vec<String> = params
+            .secrets
+            .iter()
+            .map(|s| s.secret_id.clone())
+            .collect();
+
+        // Port specs
+        let mut open_ports = Vec::new();
+        for port in &params.encrypted_ports {
+            open_ports.push(pb::PortSpec {
+                port: *port as u32,
+                unencrypted: false,
+                tunnel_type: None,
+            });
+        }
+        for port in &params.unencrypted_ports {
+            open_ports.push(pb::PortSpec {
+                port: *port as u32,
+                unencrypted: true,
+                tunnel_type: None,
+            });
+        }
+
+        // GPU config
+        let gpu_config = if !params.gpu.is_empty() {
+            let (gpu_type, count) = if params.gpu.contains(':') {
+                let parts: Vec<&str> = params.gpu.splitn(2, ':').collect();
+                let count: u32 = parts[1].parse().map_err(|_| {
+                    ModalError::Invalid(format!(
+                        "invalid GPU count: {}, value must be a positive integer",
+                        parts[1]
+                    ))
+                })?;
+                (parts[0].to_uppercase(), count)
+            } else {
+                (params.gpu.to_uppercase(), 1)
+            };
+            Some(pb::GpuConfig {
+                r#type: 0,
+                count,
+                gpu_type,
+                ..Default::default()
+            })
+        } else {
+            None
+        };
+
+        // Resources
+        let milli_cpu = if params.cpu > 0.0 {
+            Some((params.cpu * 1000.0) as u32)
+        } else {
+            None
+        };
+        let milli_cpu_max = if params.cpu_limit > 0.0 {
+            Some((params.cpu_limit * 1000.0) as u32)
+        } else {
+            None
+        };
+        let memory_mb = if params.memory_mib > 0 {
+            Some(params.memory_mib as u32)
+        } else {
+            None
+        };
+        let memory_mb_max = if params.memory_limit_mib > 0 {
+            Some(params.memory_limit_mib as u32)
+        } else {
+            None
+        };
+
+        let resources = Some(pb::Resources {
+            milli_cpu: milli_cpu.unwrap_or(0),
+            gpu_config,
+            memory_mb: memory_mb.unwrap_or(0),
+            milli_cpu_max: milli_cpu_max.unwrap_or(0),
+            memory_mb_max: memory_mb_max.unwrap_or(0),
+            ..Default::default()
+        });
+
+        // Scheduler placement (regions)
+        let scheduler_placement = if !params.regions.is_empty() {
+            Some(pb::SchedulerPlacement {
+                regions: params.regions.clone(),
+                ..Default::default()
+            })
+        } else {
+            None
+        };
+
+        let workdir = if params.workdir.is_empty() {
+            None
+        } else {
+            Some(params.workdir.clone())
+        };
+
+        let name = if params.name.is_empty() {
+            None
+        } else {
+            Some(params.name.clone())
+        };
+
         let definition = pb::Sandbox {
+            entrypoint_args: params.command.clone(),
             image_id: image_id.to_string(),
+            secret_ids,
+            timeout_secs,
+            workdir,
+            pty_info,
+            network_access,
+            volume_mounts,
+            resources,
+            scheduler_placement,
+            cloud_provider_str: params.cloud.clone(),
+            custom_domain: params.custom_domain.clone().unwrap_or_default(),
+            open_ports_oneof: if open_ports.is_empty() {
+                None
+            } else {
+                Some(pb::sandbox::OpenPortsOneof::OpenPorts(pb::PortSpecs {
+                    ports: open_ports,
+                }))
+            },
+            name,
             ..Default::default()
         };
         let request = pb::SandboxCreateRequest {
@@ -897,7 +1067,6 @@ impl crate::sandbox::SandboxGrpcClient for ModalGrpcTransport {
             definition: Some(definition),
             environment_name: String::new(),
         };
-        let _ = params; // params are encoded into the definition in real usage
         let resp = self.retry_block_on(|_ctx| {
             let mut client = self.client.lock().unwrap().clone();
             let req = request.clone();
@@ -1735,23 +1904,37 @@ mod tests {
     }
 
     #[test]
-    fn test_connect_requires_tokio_runtime() {
+    fn test_connect_creates_own_runtime() {
+        // connect() creates its own tokio runtime — no external runtime needed.
+        // With default (empty) credentials, it fails at client creation, not at runtime creation.
         let profile = Profile::default();
         let result = ModalGrpcTransport::connect(&profile, "0.1.0");
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
+        // The error should be about missing credentials, NOT about tokio runtime
         assert!(
-            err.contains("tokio runtime"),
-            "expected tokio runtime error, got: {}",
+            !err.contains("tokio runtime"),
+            "should not fail on runtime: {}",
+            err
+        );
+        assert!(
+            err.contains("token"),
+            "expected credential error, got: {}",
             err
         );
     }
 
     #[test]
-    fn test_connect_default_requires_runtime() {
+    fn test_connect_default_creates_own_runtime() {
         let profile = Profile::default();
         let result = ModalGrpcTransport::connect_default(&profile);
         assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            !err.contains("tokio runtime"),
+            "should not fail on runtime: {}",
+            err
+        );
     }
 
     #[tokio::test]

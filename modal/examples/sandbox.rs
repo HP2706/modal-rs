@@ -1,39 +1,79 @@
 // Rust equivalent of examples/sandbox (Go).
 //
-// Demonstrates creating a Sandbox with stdin/stdout communication.
-// Requires a running Modal backend to execute.
+// Creates a real Sandbox on Modal with stdin/stdout communication.
+// Requires valid Modal credentials in ~/.modal.toml or environment variables.
 
-use modal::app::App;
-use modal::image::Image;
+use modal::app::AppFromNameParams;
+use modal::client::Client;
+use modal::image::ImageBuildParams;
 use modal::sandbox::SandboxCreateParams;
 
 fn main() {
-    // In a real application, you would create a client and use gRPC services.
-    // This example demonstrates the type construction patterns.
+    println!("Connecting to Modal...");
+    let client = Client::connect().expect("Failed to connect to Modal");
+    println!("Connected (version: {})", client.version());
 
-    let _app = App {
-        app_id: "ap-example".to_string(),
-        name: "libmodal-example".to_string(),
-    };
+    // Get or create the app
+    let app = client
+        .apps
+        .from_name(
+            "libmodal-rs-example",
+            Some(&AppFromNameParams {
+                create_if_missing: true,
+                ..Default::default()
+            }),
+        )
+        .expect("Failed to get or create app");
+    println!("App: {} ({})", app.name, app.app_id);
 
-    let image = Image {
-        image_id: String::new(),
-        image_registry_config: None,
-        tag: "alpine:3.21".to_string(),
-        layers: vec![],
-    };
-    println!("Image tag: {}", image.tag);
+    // Create an image from a public registry
+    let image = client.images.from_registry("alpine:3.21", None);
+    println!("Building image (tag: {})...", image.tag);
 
-    let params = SandboxCreateParams {
-        // Command: ["cat"] would be passed to the gRPC call
-        ..Default::default()
-    };
-    println!("Sandbox params - PTY: {}, CPU: {}", params.pty, params.cpu);
+    let image = client
+        .images
+        .build(
+            &image,
+            &ImageBuildParams {
+                app_id: app.app_id.clone(),
+                ..Default::default()
+            },
+        )
+        .expect("Failed to build image");
+    println!("Image built: {}", image.image_id);
 
-    // With a real client, you would:
-    // 1. Call sandbox_service.create(app, image, params) to create the sandbox
-    // 2. Write to sandbox stdin
-    // 3. Read from sandbox stdout
-    // 4. Call sandbox.terminate() when done
-    println!("Sandbox configuration ready.");
+    // Create a sandbox running "echo hello from modal-rs"
+    let sandbox = client
+        .sandboxes
+        .create(
+            &app.app_id,
+            &image.image_id,
+            SandboxCreateParams {
+                command: vec![
+                    "echo".to_string(),
+                    "hello from modal-rs!".to_string(),
+                ],
+                timeout_secs: Some(60),
+                ..Default::default()
+            },
+        )
+        .expect("Failed to create sandbox");
+    println!("Created sandbox: {}", sandbox.sandbox_id);
+
+    // Wait for the sandbox to finish
+    let result = client
+        .sandboxes
+        .wait(&sandbox.sandbox_id, 60.0)
+        .expect("Failed to wait for sandbox");
+    println!(
+        "Sandbox finished - exit_code: {}, success: {}",
+        result.exit_code, result.success
+    );
+
+    // Clean up
+    client
+        .sandboxes
+        .terminate(&sandbox.sandbox_id)
+        .expect("Failed to terminate sandbox");
+    println!("Sandbox terminated.");
 }

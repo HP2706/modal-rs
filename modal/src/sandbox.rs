@@ -4,6 +4,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::error::ModalError;
+use crate::secret::Secret;
+use crate::volume::Volume;
 
 const MAX_ARG_LEN: usize = 1 << 16; // 64 KiB
 
@@ -18,12 +20,26 @@ pub enum StreamConfig {
 /// SandboxCreateParams are options for creating a sandbox.
 #[derive(Debug, Clone, Default)]
 pub struct SandboxCreateParams {
+    pub command: Vec<String>,
     pub pty: bool,
     pub cpu: f64,
     pub cpu_limit: f64,
     pub memory_mib: i32,
     pub memory_limit_mib: i32,
+    pub gpu: String,
     pub timeout_secs: Option<u32>,
+    pub idle_timeout_secs: Option<u32>,
+    pub workdir: String,
+    pub env: HashMap<String, String>,
+    pub secrets: Vec<Secret>,
+    pub volumes: HashMap<String, Volume>,
+    pub encrypted_ports: Vec<i32>,
+    pub unencrypted_ports: Vec<i32>,
+    pub block_network: bool,
+    pub cidr_allowlist: Vec<String>,
+    pub cloud: String,
+    pub regions: Vec<String>,
+    pub name: String,
     pub custom_domain: Option<String>,
 }
 
@@ -622,7 +638,26 @@ impl<C: SandboxGrpcClient> SandboxService for SandboxServiceImpl<C> {
         let _ = build_sandbox_create_request_proto(app_id, image_id, params.clone())?;
 
         let sandbox_id = self.client.sandbox_create(app_id, image_id, &params)?;
-        Ok(Sandbox::new(sandbox_id))
+
+        // Poll for task_id (matching Go SDK's ensureTaskID behavior)
+        let max_attempts = 600; // 5 minutes at 500ms intervals
+        for _ in 0..max_attempts {
+            let (task_id, exited) = self.client.sandbox_get_task_id(&sandbox_id)?;
+            if let Some(tid) = task_id {
+                return Ok(Sandbox::with_task_id(sandbox_id, tid));
+            }
+            if exited {
+                return Err(ModalError::Other(format!(
+                    "Sandbox '{}' was terminated before a task could be scheduled",
+                    sandbox_id
+                )));
+            }
+            std::thread::sleep(std::time::Duration::from_millis(500));
+        }
+        Err(ModalError::Other(format!(
+            "Sandbox '{}' did not get a task_id after {} attempts",
+            sandbox_id, max_attempts
+        )))
     }
 
     fn from_id(&self, sandbox_id: &str) -> Result<Sandbox, ModalError> {
@@ -1813,13 +1848,17 @@ mod tests {
     fn test_sandbox_service_create() {
         let mock = MockSandboxGrpcClient::new();
         mock.push(MockSbResponse::Create(Ok("sb-123".to_string())));
+        mock.push(MockSbResponse::GetTaskId(Ok((
+            Some("ta-456".to_string()),
+            false,
+        ))));
         let svc = make_sandbox_service(mock);
 
         let sb = svc
             .create("app-1", "img-1", SandboxCreateParams::default())
             .unwrap();
         assert_eq!(sb.sandbox_id, "sb-123");
-        assert!(sb.task_id.is_none());
+        assert_eq!(sb.task_id.as_deref(), Some("ta-456"));
     }
 
     #[test]

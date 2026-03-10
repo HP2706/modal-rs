@@ -2,48 +2,90 @@
 //
 // Demonstrates building and caching a Docker image with custom system
 // dependencies using Image.dockerfile_commands() and layer chaining.
-// Requires a running Modal backend to execute.
+// Runs against real Modal API.
 
-use modal::image::{Image, ImageDockerfileCommandsParams};
-use modal::secret::Secret;
+use modal::app::AppFromNameParams;
+use modal::client::Client;
+use modal::image::ImageBuildParams;
 
 fn main() {
-    // Create an ephemeral secret for build-time environment variables.
-    let secret = Secret {
-        secret_id: "st-curl-version".to_string(),
-        name: String::new(),
-    };
+    println!("Connecting to Modal...");
+    let client = Client::connect().expect("Failed to connect to Modal");
 
-    // Build an image with chained Dockerfile commands.
-    // Each dockerfile_commands() call creates a new layer.
-    let base = Image {
-        image_id: String::new(),
-        image_registry_config: None,
-        tag: "alpine:3.21".to_string(),
-        layers: vec![Default::default()],
-    };
-
-    let image = base
-        .dockerfile_commands(
-            &["RUN apk add --no-cache curl=$CURL_VERSION".to_string()],
-            Some(&ImageDockerfileCommandsParams {
-                secrets: vec![secret],
+    let app = client
+        .apps
+        .from_name(
+            "libmodal-rs-example",
+            Some(&AppFromNameParams {
+                create_if_missing: true,
                 ..Default::default()
             }),
         )
-        .dockerfile_commands(
-            &["ENV SERVER=ipconfig.me".to_string()],
-            None,
-        );
+        .expect("Failed to get or create app");
+    println!("App: {} ({})", app.name, app.app_id);
 
-    println!("Image tag: {}", image.tag);
+    // Build a base image from registry
+    let base = client.images.from_registry("alpine:3.21", None);
+    println!("Base image tag: {}", base.tag);
+
+    // Add a layer with Dockerfile commands
+    let image = base.dockerfile_commands(
+        &[
+            "RUN apk add --no-cache curl".to_string(),
+            "RUN apk add --no-cache jq".to_string(),
+        ],
+        None,
+    );
     println!("Image layers: {}", image.layers.len());
     for (i, layer) in image.layers.iter().enumerate() {
         println!("  Layer {}: {:?}", i, layer.commands);
     }
 
-    // With a real client:
-    //   let built = image_service.build(&image, &build_params)?;
-    //   let sb = sandbox_service.create(app, built, &params)?;
-    println!("Image with {} layers ready for build.", image.layers.len());
+    // Build the image on Modal
+    println!("Building image on Modal...");
+    let built = client
+        .images
+        .build(
+            &image,
+            &ImageBuildParams {
+                app_id: app.app_id.clone(),
+                ..Default::default()
+            },
+        )
+        .expect("Failed to build image");
+    println!("Image built: {}", built.image_id);
+
+    // Use the built image in a sandbox to verify curl and jq are installed
+    let sandbox = client
+        .sandboxes
+        .create(
+            &app.app_id,
+            &built.image_id,
+            modal::sandbox::SandboxCreateParams {
+                command: vec![
+                    "sh".to_string(),
+                    "-c".to_string(),
+                    "curl --version | head -1 && jq --version".to_string(),
+                ],
+                timeout_secs: Some(60),
+                ..Default::default()
+            },
+        )
+        .expect("Failed to create sandbox");
+    println!("Sandbox: {}", sandbox.sandbox_id);
+
+    let result = client
+        .sandboxes
+        .wait(&sandbox.sandbox_id, 60.0)
+        .expect("Failed to wait for sandbox");
+    println!(
+        "Sandbox finished - exit_code: {}, success: {}",
+        result.exit_code, result.success
+    );
+
+    client
+        .sandboxes
+        .terminate(&sandbox.sandbox_id)
+        .expect("Failed to terminate sandbox");
+    println!("Done!");
 }

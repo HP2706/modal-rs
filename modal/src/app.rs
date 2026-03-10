@@ -49,7 +49,7 @@ impl<C: AppGrpcClient> AppService for AppServiceImpl<C> {
         let default_params = AppFromNameParams::default();
         let params = params.unwrap_or(&default_params);
 
-        let creation_type = if params.create_if_missing { 2 } else { 0 };
+        let creation_type = if params.create_if_missing { 1 } else { 0 };
         let env = environment_name(&params.environment, &self.profile);
 
         let app_id = self

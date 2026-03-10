@@ -1,24 +1,38 @@
-// Rust equivalent of examples/function-call (Go).
+// Demonstrates calling a deployed Modal Function from Rust.
 //
-// Demonstrates calling a Modal Function with positional and keyword arguments.
-// Requires a running Modal backend to execute.
+// Requires deploying test_support.py first:
+//   modal deploy test_support.py
+//
+// Then run:
+//   cargo run --example function_call
 
-use modal::function::{Function, FunctionFromNameParams};
+use modal::client::Client;
+use modal::invocation::NoBlobDownloader;
 
 fn main() {
-    // Function.from_name resolves a deployed function by app and name.
-    let params = FunctionFromNameParams::default();
-    println!("Function lookup params - environment: '{}'", params.environment);
+    println!("Connecting to Modal...");
+    let client = Client::connect().expect("Failed to connect to Modal");
+    println!("Connected (version: {})", client.version());
 
-    // A Function is created via the FunctionService trait.
-    // With a real client:
-    //   let echo = function_service.from_name("libmodal-test-support", "echo_string", None)?;
-    let echo = Function::new("fn-echo-123".to_string(), None);
-    println!("Function ID: {}", echo.function_id);
-    println!("Web URL: '{}'", echo.get_web_url());
+    // Look up the deployed echo_string function
+    let echo = client
+        .functions
+        .from_name("libmodal-rs-test-support", "echo_string", None)
+        .expect("Failed to get function (is test_support.py deployed?)");
 
-    // Calling a function remotely:
-    //   let result = echo.remote(client, downloader, &args, &kwargs)?;
-    // Arguments are CBOR-encoded before sending.
-    println!("Function configured for remote invocation.");
+    println!("Function: {}", echo.function_id);
+
+    // Call with keyword args (matching Go example: echo.Remote(ctx, nil, map[string]any{"s": "Hello world!"}))
+    let args = vec![];
+    let kwargs = ciborium::Value::Map(vec![(
+        ciborium::Value::Text("s".to_string()),
+        ciborium::Value::Text("Hello from Rust!".to_string()),
+    )]);
+
+    println!("Calling echo_string(s=\"Hello from Rust!\")...");
+    let transport = client.transport();
+    let result = echo
+        .remote(transport.as_ref(), &NoBlobDownloader, &args, &kwargs)
+        .expect("Failed to call function");
+    println!("Result: {:?}", result);
 }
