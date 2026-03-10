@@ -289,6 +289,16 @@
       "priority": "high",
       "status": "done",
       "notes": "Added SecretGrpcClient trait, SecretServiceImpl with from_name/from_map/delete. NotFound error mapping, allow_missing support for delete. 11 new unit tests, 5 new integration tests. Complete."
+    },
+    {
+      "id": "F031",
+      "name": "Profile config resolution and ClientParams",
+      "module": "config",
+      "category": "source",
+      "go_reference": "libmodal/modal-go/client.go",
+      "priority": "medium",
+      "status": "done",
+      "notes": "Added Profile::from_config() and from_config_with_overrides() matching Go NewClient/NewClientWithOptions config resolution. Moved ClientParams to config module. Eliminated all dead-code warnings from config.rs. 5 new tests. Complete."
     }
   ]
 }

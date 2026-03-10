@@ -1,5 +1,28 @@
 # Modal Rust SDK Progress
 
+## 2026-03-10 — Profile config resolution and dead-code cleanup
+
+### What was done
+Added `Profile::from_config()` and `Profile::from_config_with_overrides()` methods (F031), matching Go SDK's `NewClient()` / `NewClientWithOptions()` config resolution pattern:
+
+1. **`Profile::from_config()`** (`config.rs`): Resolves a Profile from env vars and `~/.modal.toml` config file, matching Go's `NewClient()` resolution order.
+2. **`Profile::from_config_with_overrides(params)`** (`config.rs`): Same resolution with optional `ClientParams` overrides, matching Go's `NewClientWithOptions()`.
+3. **`ClientParams` moved** from `client.rs` to `config.rs` with re-export from `client.rs` for backward compatibility.
+4. **All 5 dead-code warnings eliminated**: `config_file_path`, `read_config_file`, `get_profile`, `RawProfile`, `Config` are now used by the new Profile methods.
+5. **5 new unit tests**: env var resolution, overrides, empty overrides, TOML file reading, ClientParams default.
+
+### Test counts
+- Before: 446 unit tests + 179 integration tests
+- After: 451 unit tests + 179 integration tests (5 new)
+- All passing, zero compiler warnings
+
+### What's next
+- **The Modal Rust SDK is fully feature-complete with zero compiler warnings.**
+- Only remaining low-priority items:
+  - client_test.go equivalent (requires real gRPC connections, not suitable for mock tests)
+
+---
+
 ## 2026-03-09 — SecretService from_name() and delete() methods
 
 ### What was done
