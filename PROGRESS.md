@@ -1,5 +1,28 @@
 # Modal Rust SDK Progress
 
+## 2026-03-10 — Compiler warning cleanup (F035)
+
+### What was done
+Fixed all remaining compiler warnings in integration tests and test utilities:
+
+1. **app_test.rs**: Removed unused `GpuConfig` import.
+2. **image_test.rs**: Removed unused `Image` import.
+3. **volume_test.rs**: Added `#[allow(dead_code)]` to `push_delete` method and `Delete` enum variant (structurally needed for mock trait impl but never called from tests).
+4. **common/mod.rs**: Added `#[allow(dead_code)]` to `has_credentials` (used by `skip_if_no_credentials` macro, which is available but not yet called).
+
+### Test counts
+- 466 unit tests + 187 integration tests — all passing
+- Zero compiler warnings across library, tests, and examples
+
+### What's next
+- **The Modal Rust SDK is fully feature-complete with zero compiler warnings.**
+- All 35 features (F001-F035) are done.
+- Remaining potential improvements:
+  - Auth token interceptor (proactive token refresh via AuthTokenManager)
+  - Live API integration testing (requires credentials and network access)
+
+---
+
 ## 2026-03-10 — gRPC interceptor chain (F034)
 
 ### What was done

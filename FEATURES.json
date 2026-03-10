@@ -329,6 +329,16 @@
       "priority": "high",
       "status": "done",
       "notes": "Tonic interceptor for automatic header injection (token_id, token_secret, client_type, version) on every gRPC request. Transport-level retry with exponential backoff for transient errors (DeadlineExceeded, Unavailable, Canceled) matching Go SDK's retryInterceptor defaults (3 retries, 100ms base delay, 2x backoff, 1s max). InterceptedService<Channel, ModalInterceptor> type. 11 new tests. Complete."
+    },
+    {
+      "id": "F035",
+      "name": "Compiler warning cleanup",
+      "module": "tests",
+      "category": "test",
+      "go_reference": "N/A",
+      "priority": "low",
+      "status": "done",
+      "notes": "Removed unused imports (GpuConfig in app_test, Image in image_test). Suppressed dead_code warnings for test mock helpers (push_delete, Delete variant, has_credentials). Zero compiler warnings across all tests and examples. Complete."
     }
   ]
 }
