@@ -29,13 +29,13 @@ base_image = (
         "npm install -g @anthropic-ai/claude-code",
     )
     .uv_pip_install("modal")
+    .env({"IS_SANDBOX": "1"})
     .add_local_file(
         local_path='sandbox_config.json',
         remote_path='/root/sandbox_config.json',
     ).add_local_file(
         local_path=os.path.expanduser('~/.modal.toml'),
         remote_path='/root/.modal.toml',
-        copy=False,
     )
 )
 
@@ -94,7 +94,7 @@ def _create_sandbox(image_id: str | None = None) -> modal.Sandbox:
         
     return modal.Sandbox.create(
         app=app,
-        image=image.env({"IS_SANDBOX": "1"}),
+        image=image,
         secrets=[github_secret],
         volumes={REPO_DIR: repo_vol},
         timeout=60*60*24,
@@ -131,7 +131,7 @@ def _run_claude(sb: modal.Sandbox, prompt: str, logfile: str, max_turns: int | N
     # No | tee — claude writes directly to the PTY so Node.js doesn't buffer.
     # We collect raw output, extract JSON lines, and write the logfile ourselves.
     cmd = (
-        f"cd {REPO_DIR} && claude -p --dangerously-skip-permissions "
+        f"export IS_SANDBOX=1 && cd {REPO_DIR} && claude -p --dangerously-skip-permissions "
         f"--verbose {max_turns_flag}"
         f"--output-format stream-json "
         f"--model claude-opus-4-6 "
@@ -169,7 +169,7 @@ def _run_claude(sb: modal.Sandbox, prompt: str, logfile: str, max_turns: int | N
         except UnicodeDecodeError:
             # Modal splits raw bytes at arbitrary boundaries which can
             # bisect multi-byte UTF-8 chars (e.g. 0xe2 for '…').
-            # Skip the malformed chunk — at worst we lose one character.
+            # Skip the malformed chunk — at worst we lose one character. ~
             continue
         clean = ansi_re.sub('', chunk)
         line_buf += clean
@@ -194,6 +194,7 @@ def _run_claude(sb: modal.Sandbox, prompt: str, logfile: str, max_turns: int | N
     log_writer.wait()
 
     return proc.returncode
+
 
 @app.local_entrypoint()
 def setup_auth():
@@ -401,7 +402,12 @@ def main(
     with open(CONFIG_FILE, 'r') as f:
         image_id = json.load(f)['image_id']
     with modal.enable_output(), app.run(detach=detach):
-        result = modal_fn.remote(image_id=image_id)
+        
+        if cmd == "run_yolo":
+            result = modal_fn.remote(image_id=image_id, n_loops=n_loops)
+        else:
+            result = modal_fn.remote(image_id=image_id)
+        
         print("result:", result)
     
 if __name__ == "__main__":
