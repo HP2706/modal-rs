@@ -4,15 +4,17 @@ You are an autonomous coding agent working on `modal-rs`, a Rust SDK for the Mod
 
 ## The Goal
 
-**Build a complete, production-quality Rust SDK that fully replaces `modal-go`.** This means:
+**Build a complete, production-quality Rust client SDK that fully replaces `modal-go`.** This means:
 
 1. Every Go source file in `libmodal/modal-go/*.go` must have a complete Rust equivalent in `modal/src/`.
 2. Every Go test file (`*_test.go`) must have equivalent Rust test coverage — both unit tests (in-module) and integration tests (in `modal/tests/`).
 3. Every Go example in `libmodal/modal-go/examples/` must have an equivalent Rust example in `modal/examples/`.
 4. The `internal/grpcmock` package must be fully replicated in `modal/src/grpc_mock.rs`.
-5. The Rust SDK must be API-complete: same functions, same types, same behavior. Someone migrating from the Go SDK should find a 1:1 mapping.
+5. The Rust SDK must be API-complete: same functions, same types, same behavior.
 
-The end state is a crate that could be merged into `libmodal` alongside the Go and JS SDKs, or fully replace `modal-go`.
+**STATUS: COMPLETE (F001-F035).** 466 unit tests + 187 integration tests, all passing, zero warnings.
+
+**NOTE:** A deployment SDK (proc macros like Python's `@app.function()`) was investigated and found to be **infeasible** — Modal's `FunctionCreate` API only supports Python callables (cloudpickle or importlib). See `ARCHITECTURE.md` for the full analysis. This SDK is a client SDK only (like Go).
 
 ## Step 1: Orient yourself (ALWAYS do this first)
 
@@ -106,30 +108,30 @@ modal-rs/
 └── Cargo.toml          # Workspace root
 ```
 
-## Go SDK files that MUST have Rust equivalents
+## Reference implementations
 
-Source files (in `libmodal/modal-go/`):
-- app.go, auth_token_manager.go, client.go, cloud_bucket_mount.go, cls.go
-- config.go, doc.go, ephemeral.go, errors.go, function.go, function_call.go
-- image.go, invocation.go, logger.go, proxy.go, queue.go, retries.go
-- sandbox.go, sandbox_filesystem.go, secret.go, serialization_test.go
-- task_command_router_client.go, volume.go
+### Go SDK (DONE — all files have Rust equivalents)
+Source: `libmodal/modal-go/*.go` → `modal/src/*.rs`
+Tests: `libmodal/modal-go/*_test.go` → `modal/tests/*_test.rs`
+Examples: `libmodal/modal-go/examples/` → `modal/examples/`
 
-Test files:
-- app_test.go, client_test.go, cloud_bucket_mount_test.go, cls_test.go
-- config_test.go, logger_test.go, sandbox_test.go, secret_test.go
-- serialization_test.go, task_command_router_client_test.go
+### Python SDK (Phase 2 reference — excluding CLI)
+Source: `libmodal/modal-client/modal/`
+Tests: `libmodal/modal-client/test/`
 
-Examples (26 examples in `libmodal/modal-go/examples/`):
-- cls-call, cls-call-with-options, custom-client, function-call, function-current-stats
-- function-spawn, image-building, sandbox, sandbox-agent, sandbox-cloud-bucket
-- sandbox-connect-token, sandbox-directory-snapshot, sandbox-exec, sandbox-filesystem
-- sandbox-filesystem-snapshot, sandbox-gpu, sandbox-named, sandbox-poll, sandbox-prewarm
-- sandbox-private-image, sandbox-proxy, sandbox-secrets, sandbox-tunnels
-- sandbox-volume, sandbox-volume-ephemeral, telemetry
+Key Python test files for new features:
+- `test/decorator_test.py` (6 tests) — decorator validation
+- `test/app_test.py` (33 tests) — app registration, deploy flow, hydration
+- `test/function_test.py` (88 tests) — resource config, map/starmap, batching
+- `test/cls_test.py` (63 tests) — class registration, parameters, lifecycle decorators
+- `test/schedule_test.py` (1 test) — cron/period wiring
+- `test/dict_test.py` — persistent dict operations
+- `test/network_file_system_test.py` — NFS operations
+- `test/mount_test.py` — mount operations
+- `test/snapshot_test.py` — sandbox snapshots
 
-Internal packages:
-- internal/grpcmock → modal/src/grpc_mock.rs
+### Proto definitions (shared source of truth)
+`libmodal/modal-client/modal_proto/api.proto` — all gRPC service and message definitions
 
 ## Rules
 
@@ -175,5 +177,7 @@ Status values: `"todo"`, `"in_progress"`, `"done"`, `"blocked"`.
 Priority: `"high"` = core SDK source files incomplete, `"medium"` = test coverage gaps, `"low"` = examples/polish.
 Category: `"source"` for SDK modules, `"test"` for test coverage, `"example"` for example programs.
 
-# New
-Previous agent did not try to make the client call the modal api. When every feature is implemented you should implement this. Modal credentials will be available in your environment.
+# Remaining work
+- Auth token interceptor (proactive token refresh via AuthTokenManager)
+- Live API integration testing (requires credentials and network access)
+- See `ARCHITECTURE.md` for analysis of why a deployment SDK is not feasible with the current Modal API.

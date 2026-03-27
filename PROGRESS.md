@@ -1,5 +1,21 @@
 # Modal Rust SDK Progress
 
+## 2026-03-12 — Feasibility analysis: Rust deployment SDK is NOT possible
+
+### Investigation
+Analyzed the Modal `FunctionCreate` gRPC API (`api.proto`) to determine if a compiled Rust binary could be deployed as a Modal Function.
+
+**Result: not feasible.** The API's `DefinitionType` enum only supports:
+- `SERIALIZED` — cloudpickle'd Python bytecode
+- `FILE` — Python `module_name` + `function_name` (server does `importlib.import_module`)
+
+Both paths require Python. No binary/container entrypoint option exists. See `ARCHITECTURE.md` for full analysis.
+
+### Conclusion
+The Rust SDK is complete as a **client SDK** (Go SDK parity, F001-F035). A deployment SDK (`#[modal::function]` proc macros) would require Modal to add native binary/container support to their Function API. Project is done unless Modal changes their API.
+
+---
+
 ## 2026-03-10 — Compiler warning cleanup (F035)
 
 ### What was done
